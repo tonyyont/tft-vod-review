@@ -6,6 +6,7 @@ declare global {
       scanVODs: (folderPath: string) => Promise<void>;
       getVODs: () => Promise<VOD[]>;
       getVOD: (vodId: number) => Promise<VOD | null>;
+      onVodsUpdated: (callback: () => void) => () => void;
       saveReview: (vodId: number, reviewText: string) => Promise<void>;
       linkMatch: (vodId: number, matchId: string) => Promise<void>;
       fetchMatchMetadata: (matchId: string, region?: string) => Promise<MatchMetadata>;

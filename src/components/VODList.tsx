@@ -11,7 +11,23 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
     loadVODs();
+
+    const unsubscribe = window.electronAPI.onVodsUpdated(() => {
+      if (isMounted) loadVODs();
+    });
+
+    const onFocus = () => {
+      if (isMounted) loadVODs();
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      isMounted = false;
+      unsubscribe?.();
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const loadVODs = async () => {

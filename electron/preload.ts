@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanVODs: (folderPath: string) => ipcRenderer.invoke('scan-vods', folderPath),
   getVODs: () => ipcRenderer.invoke('get-vods'),
   getVOD: (vodId: number) => ipcRenderer.invoke('get-vod', vodId),
+  onVodsUpdated: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('vods-updated', listener);
+    return () => ipcRenderer.removeListener('vods-updated', listener);
+  },
   
   // Reviews
   saveReview: (vodId: number, reviewText: string) => ipcRenderer.invoke('save-review', vodId, reviewText),
@@ -29,6 +34,7 @@ export type ElectronAPI = {
   scanVODs: (folderPath: string) => Promise<void>;
   getVODs: () => Promise<VOD[]>;
   getVOD: (vodId: number) => Promise<VOD | null>;
+  onVodsUpdated: (callback: () => void) => () => void;
   saveReview: (vodId: number, reviewText: string) => Promise<void>;
   linkMatch: (vodId: number, matchId: string) => Promise<void>;
   fetchMatchMetadata: (matchId: string, region?: string) => Promise<MatchMetadata>;

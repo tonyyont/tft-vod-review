@@ -158,6 +158,15 @@ export class Database {
     return existing?.id || 0;
   }
 
+  listVODFilePaths(): string[] {
+    const rows = this.db.prepare('SELECT file_path FROM vods').all() as Array<{ file_path: string }>;
+    return rows.map(r => r.file_path);
+  }
+
+  deleteVODByPath(filePath: string): void {
+    this.db.prepare('DELETE FROM vods WHERE file_path = ?').run(filePath);
+  }
+
   saveReview(vodId: number, reviewText: string): void {
     this.db.prepare('UPDATE vods SET review_text = ? WHERE id = ?').run(reviewText, vodId);
   }

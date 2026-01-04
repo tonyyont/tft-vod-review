@@ -3,7 +3,6 @@ import VODList from './components/VODList';
 import VODDetail from './components/VODDetail';
 import Settings from './components/Settings';
 import SetupWizard from './components/SetupWizard';
-import type { VOD } from './types/electron';
 
 type View = 'setup' | 'list' | 'detail' | 'settings';
 
