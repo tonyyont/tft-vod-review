@@ -10,12 +10,20 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
   const [vod, setVOD] = useState<VOD | null>(null);
   const [reviewText, setReviewText] = useState('');
   const [matchMetadata, setMatchMetadata] = useState<MatchMetadata | null>(null);
-  const [matchIdInput, setMatchIdInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [lastAutosavedAt, setLastAutosavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [linkCandidates, setLinkCandidates] = useState<Array<{
+    matchId: string;
+    matchStartMs: number;
+    matchEndMs: number;
+    placement: number | null;
+    deltaMs: number;
+  }>>([]);
+  const [linkingAction, setLinkingAction] = useState(false);
+  const [settings, setSettings] = useState<Record<string, string>>({});
 
   const reviewTextRef = useRef(reviewText);
   const dirtyRef = useRef(dirty);
@@ -38,6 +46,8 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
   const loadVOD = async () => {
     setLoading(true);
     try {
+      const s = await window.electronAPI.getSettings();
+      setSettings(s);
       const vodData = await window.electronAPI.getVOD(vodId);
       if (vodData) {
         setVOD(vodData);
@@ -46,7 +56,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
         setDirty(false);
         setSaveError(null);
         setLastAutosavedAt(null);
-        setMatchIdInput(vodData.matchId || '');
+        setLinkCandidates([]);
 
         // Load match metadata if linked
         if (vodData.matchId) {
@@ -58,6 +68,13 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
           } catch (error) {
             console.error('Error loading match metadata:', error);
           }
+        } else if (vodData.matchLinkStatus === 'ambiguous') {
+          try {
+            const candidates = await window.electronAPI.getVODLinkCandidates(vodData.id);
+            setLinkCandidates(candidates);
+          } catch (error) {
+            console.error('Error loading link candidates:', error);
+          }
         }
       }
     } catch (error) {
@@ -66,6 +83,25 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
       setLoading(false);
     }
   };
+
+  const tacticsRegionSegment = useMemo(() => {
+    const r = (settings.riot_region || 'NA').toLowerCase();
+    const allowed = new Set(['na', 'euw', 'eune', 'kr', 'oce', 'jp', 'br', 'lan', 'las', 'tr', 'ru']);
+    return allowed.has(r) ? r : 'na';
+  }, [settings.riot_region]);
+
+  const tacticsPlayerUrl = useMemo(() => {
+    const gameName = settings.riot_game_name;
+    const tagLine = settings.riot_tag_line;
+    if (!gameName || !tagLine) return null;
+    return `https://tactics.tools/player/${tacticsRegionSegment}/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`;
+  }, [settings.riot_game_name, settings.riot_tag_line, tacticsRegionSegment]);
+
+  const tacticsMatchUrl = useMemo(() => {
+    if (!vod?.matchId) return null;
+    if (!tacticsPlayerUrl) return null;
+    return `${tacticsPlayerUrl}/${encodeURIComponent(vod.matchId)}`;
+  }, [tacticsPlayerUrl, vod?.matchId]);
 
   const handleSaveReview = async (textToSave: string) => {
     if (!vod) return false;
@@ -86,22 +122,34 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     }
   };
 
-  const handleLinkMatch = async () => {
-    if (!vod || !matchIdInput.trim()) return;
+  const handleRetryAutoLink = async (opts?: { force?: boolean }) => {
+    if (!vod) return;
+    setLinkingAction(true);
     try {
-      await window.electronAPI.linkMatch(vod.id, matchIdInput.trim());
-      setVOD({ ...vod, matchId: matchIdInput.trim() });
-
-      // Fetch metadata
-      try {
-        const metadata = await window.electronAPI.fetchMatchMetadata(matchIdInput.trim());
-        setMatchMetadata(metadata);
-      } catch (error: any) {
-        alert(`Error fetching match metadata: ${error.message}`);
-      }
+      await window.electronAPI.autoLinkVOD(vod.id, opts);
+      await loadVOD();
     } catch (error) {
-      console.error('Error linking match:', error);
-      alert('Error linking match. Please try again.');
+      console.error('Error retrying auto-link:', error);
+      alert('Error retrying auto-link. Please try again.');
+    } finally {
+      setLinkingAction(false);
+    }
+  };
+
+  const handleSelectCandidate = async (matchId: string) => {
+    if (!vod) return;
+    setLinkingAction(true);
+    try {
+      await window.electronAPI.linkMatch(vod.id, matchId);
+      setVOD({ ...vod, matchId });
+      const metadata = await window.electronAPI.fetchMatchMetadata(matchId);
+      setMatchMetadata(metadata);
+      setLinkCandidates([]);
+    } catch (error: any) {
+      console.error('Error linking candidate match:', error);
+      alert(`Error linking match: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setLinkingAction(false);
     }
   };
 
@@ -213,45 +261,142 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
         <div style={{ flex: '0 0 40%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {/* Match Metadata */}
           <div style={{ padding: '20px', borderBottom: '1px solid #333', backgroundColor: '#222' }}>
-            <h3 style={{ fontSize: '16px', color: '#fff', marginBottom: '12px' }}>Match Metadata</h3>
-            
-            {!vod.matchId ? (
-              <div>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                  <input
-                    type="text"
-                    value={matchIdInput}
-                    onChange={(e) => setMatchIdInput(e.target.value)}
-                    placeholder="Enter match ID"
-                    style={{
-                      flex: 1,
-                      padding: '8px',
-                      backgroundColor: '#1a1a1a',
-                      color: '#fff',
-                      border: '1px solid #444',
-                      borderRadius: '4px',
-                      fontSize: '14px'
-                    }}
-                  />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 style={{ fontSize: '16px', color: '#fff' }}>Match Metadata</h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {tacticsPlayerUrl && (
                   <button
-                    onClick={handleLinkMatch}
-                    disabled={!matchIdInput.trim()}
+                    onClick={() => void window.electronAPI.openExternal(tacticsPlayerUrl)}
                     style={{
-                      padding: '8px 16px',
-                      backgroundColor: matchIdInput.trim() ? '#4a9eff' : '#555',
+                      padding: '6px 10px',
+                      backgroundColor: '#444',
                       color: '#fff',
                       border: 'none',
                       borderRadius: '4px',
-                      cursor: matchIdInput.trim() ? 'pointer' : 'not-allowed',
-                      fontSize: '14px'
+                      cursor: 'pointer',
+                      fontSize: '12px',
                     }}
                   >
-                    Link
+                    Player on tactics.tools
                   </button>
-                </div>
-                <p style={{ fontSize: '12px', color: '#888' }}>
-                  Link this VOD to a TFT match to see placement, augments, traits, and final board.
-                </p>
+                )}
+                {tacticsMatchUrl && (
+                  <button
+                    onClick={() => void window.electronAPI.openExternal(tacticsMatchUrl)}
+                    style={{
+                      padding: '6px 10px',
+                      backgroundColor: '#4a9eff',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                    }}
+                  >
+                    Match on tactics.tools
+                  </button>
+                )}
+              </div>
+            </div>
+            
+            {!vod.matchId ? (
+              <div>
+                {vod.matchLinkStatus === 'linking' && (
+                  <p style={{ color: '#ccc', fontSize: '14px' }}>
+                    Auto-linking this VOD to a match…
+                  </p>
+                )}
+
+                {vod.matchLinkStatus === 'ambiguous' && (
+                  <div>
+                    <p style={{ color: '#ccc', fontSize: '14px', marginBottom: '10px' }}>
+                      Multiple matches look possible. Pick one:
+                    </p>
+                    {linkCandidates.length === 0 ? (
+                      <p style={{ color: '#888', fontSize: '13px' }}>
+                        Loading candidates…
+                      </p>
+                    ) : (
+                      <div style={{ display: 'grid', gap: '8px' }}>
+                        {linkCandidates.map((c) => (
+                          <button
+                            key={c.matchId}
+                            onClick={() => handleSelectCandidate(c.matchId)}
+                            disabled={linkingAction}
+                            style={{
+                              textAlign: 'left',
+                              padding: '10px 12px',
+                              backgroundColor: '#1a1a1a',
+                              color: '#fff',
+                              border: '1px solid #333',
+                              borderRadius: '6px',
+                              cursor: linkingAction ? 'not-allowed' : 'pointer',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+                              <span>
+                                {new Date(c.matchStartMs).toLocaleString()}
+                              </span>
+                              <span style={{ color: '#4a9eff' }}>
+                                {c.placement ? `#${c.placement}` : '—'}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+                              Closest within {Math.round(c.deltaMs / 60_000)} min • {c.matchId.slice(-8)}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {(vod.matchLinkStatus === 'not_found' || !vod.matchLinkStatus) && (
+                  <div>
+                    <p style={{ color: '#888', fontSize: '14px', marginBottom: '8px' }}>
+                      Not linked yet.
+                    </p>
+                    <button
+                      onClick={() => void handleRetryAutoLink()}
+                      disabled={linkingAction}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: linkingAction ? '#555' : '#4a9eff',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: linkingAction ? 'not-allowed' : 'pointer',
+                        fontSize: '14px',
+                      }}
+                    >
+                      {linkingAction ? 'Retrying…' : 'Retry Auto-Link'}
+                    </button>
+                  </div>
+                )}
+
+                {vod.matchLinkStatus === 'error' && (
+                  <div>
+                    <p style={{ color: '#ff6b6b', fontSize: '13px', marginBottom: '8px' }}>
+                      Auto-link error: {vod.matchLinkError || 'Unknown error'}
+                    </p>
+                    <button
+                      onClick={() => void handleRetryAutoLink()}
+                      disabled={linkingAction}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: linkingAction ? '#555' : '#4a9eff',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: linkingAction ? 'not-allowed' : 'pointer',
+                        fontSize: '14px',
+                      }}
+                    >
+                      {linkingAction ? 'Retrying…' : 'Retry Auto-Link'}
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <div>
@@ -296,6 +441,27 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
                     <span style={{ fontSize: '12px' }}>Metadata not available</span>
                   </p>
                 )}
+
+                <div style={{ marginTop: '12px' }}>
+                  <button
+                    onClick={() => void handleRetryAutoLink({ force: true })}
+                    disabled={linkingAction}
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: linkingAction ? '#555' : '#444',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: linkingAction ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                    }}
+                  >
+                    {linkingAction ? 'Relinking…' : 'Relink (force)'}
+                  </button>
+                  <p style={{ marginTop: '6px', color: '#888', fontSize: '12px' }}>
+                    If the match looks wrong, this will clear the link and re-run auto-linking using start-time matching.
+                  </p>
+                </div>
               </div>
             )}
           </div>

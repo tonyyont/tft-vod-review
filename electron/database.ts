@@ -29,6 +29,11 @@ export class Database {
         created_at INTEGER,
         modified_at INTEGER,
         match_id TEXT,
+        match_link_status TEXT,
+        match_link_confidence_ms INTEGER,
+        match_link_updated_at INTEGER,
+        match_link_candidates TEXT,
+        match_link_error TEXT,
         review_text TEXT
       );
     `);
@@ -59,6 +64,28 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_vods_match_id ON vods(match_id);
       CREATE INDEX IF NOT EXISTS idx_vods_created_at ON vods(created_at);
     `);
+
+    // Best-effort migration for existing user DBs (SQLite doesn't support IF NOT EXISTS for ADD COLUMN)
+    this.migrateVodsTable();
+  }
+
+  private migrateVodsTable(): void {
+    const cols = this.db
+      .prepare(`PRAGMA table_info(vods)`)
+      .all() as Array<{ name: string }>;
+    const existing = new Set(cols.map(c => c.name));
+
+    const addColumnIfMissing = (name: string, ddlType: string) => {
+      if (existing.has(name)) return;
+      this.db.exec(`ALTER TABLE vods ADD COLUMN ${name} ${ddlType};`);
+      existing.add(name);
+    };
+
+    addColumnIfMissing('match_link_status', 'TEXT');
+    addColumnIfMissing('match_link_confidence_ms', 'INTEGER');
+    addColumnIfMissing('match_link_updated_at', 'INTEGER');
+    addColumnIfMissing('match_link_candidates', 'TEXT');
+    addColumnIfMissing('match_link_error', 'TEXT');
   }
 
   // Settings
@@ -84,6 +111,11 @@ export class Database {
     createdAt: number;
     modifiedAt: number;
     matchId: string | null;
+    matchLinkStatus: string | null;
+    matchLinkConfidenceMs: number | null;
+    matchLinkUpdatedAt: number | null;
+    matchLinkCandidates: string[] | null;
+    matchLinkError: string | null;
     reviewText: string | null;
   }> {
     const rows = this.db.prepare('SELECT * FROM vods ORDER BY created_at DESC').all() as Array<{
@@ -94,6 +126,11 @@ export class Database {
       created_at: number;
       modified_at: number;
       match_id: string | null;
+      match_link_status: string | null;
+      match_link_confidence_ms: number | null;
+      match_link_updated_at: number | null;
+      match_link_candidates: string | null;
+      match_link_error: string | null;
       review_text: string | null;
     }>;
     return rows.map(row => ({
@@ -104,6 +141,11 @@ export class Database {
       createdAt: row.created_at,
       modifiedAt: row.modified_at,
       matchId: row.match_id,
+      matchLinkStatus: row.match_link_status,
+      matchLinkConfidenceMs: row.match_link_confidence_ms,
+      matchLinkUpdatedAt: row.match_link_updated_at,
+      matchLinkCandidates: row.match_link_candidates ? JSON.parse(row.match_link_candidates) : null,
+      matchLinkError: row.match_link_error,
       reviewText: row.review_text,
     }));
   }
@@ -116,6 +158,11 @@ export class Database {
     createdAt: number;
     modifiedAt: number;
     matchId: string | null;
+    matchLinkStatus: string | null;
+    matchLinkConfidenceMs: number | null;
+    matchLinkUpdatedAt: number | null;
+    matchLinkCandidates: string[] | null;
+    matchLinkError: string | null;
     reviewText: string | null;
   } | null {
     const result = this.db.prepare('SELECT * FROM vods WHERE id = ?').get(vodId) as {
@@ -126,6 +173,11 @@ export class Database {
       created_at: number;
       modified_at: number;
       match_id: string | null;
+      match_link_status: string | null;
+      match_link_confidence_ms: number | null;
+      match_link_updated_at: number | null;
+      match_link_candidates: string | null;
+      match_link_error: string | null;
       review_text: string | null;
     } | undefined;
     if (!result) return null;
@@ -137,6 +189,11 @@ export class Database {
       createdAt: result.created_at,
       modifiedAt: result.modified_at,
       matchId: result.match_id,
+      matchLinkStatus: result.match_link_status,
+      matchLinkConfidenceMs: result.match_link_confidence_ms,
+      matchLinkUpdatedAt: result.match_link_updated_at,
+      matchLinkCandidates: result.match_link_candidates ? JSON.parse(result.match_link_candidates) : null,
+      matchLinkError: result.match_link_error,
       reviewText: result.review_text,
     };
   }
@@ -172,7 +229,84 @@ export class Database {
   }
 
   linkMatch(vodId: number, matchId: string): void {
-    this.db.prepare('UPDATE vods SET match_id = ? WHERE id = ?').run(matchId, vodId);
+    this.db
+      .prepare(
+        'UPDATE vods SET match_id = ?, match_link_status = ?, match_link_updated_at = ?, match_link_error = NULL WHERE id = ?'
+      )
+      .run(matchId, 'linked', Date.now(), vodId);
+  }
+
+  unlinkMatch(vodId: number): void {
+    this.db
+      .prepare(
+        `
+        UPDATE vods
+        SET
+          match_id = NULL,
+          match_link_status = NULL,
+          match_link_confidence_ms = NULL,
+          match_link_updated_at = ?,
+          match_link_candidates = NULL,
+          match_link_error = NULL
+        WHERE id = ?
+      `
+      )
+      .run(Date.now(), vodId);
+  }
+
+  listUnlinkedVods(): Array<{
+    id: number;
+    createdAt: number;
+    modifiedAt: number;
+    matchId: string | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT id, created_at, modified_at, match_id
+        FROM vods
+        WHERE match_id IS NULL
+        ORDER BY created_at DESC
+      `
+      )
+      .all() as Array<{ id: number; created_at: number; modified_at: number; match_id: string | null }>;
+    return rows.map(r => ({
+      id: r.id,
+      createdAt: r.created_at,
+      modifiedAt: r.modified_at,
+      matchId: r.match_id,
+    }));
+  }
+
+  setVodLinkStatus(params: {
+    vodId: number;
+    status: 'linking' | 'linked' | 'ambiguous' | 'not_found' | 'error';
+    confidenceMs?: number | null;
+    candidates?: string[] | null;
+    error?: string | null;
+  }): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `
+        UPDATE vods
+        SET
+          match_link_status = ?,
+          match_link_confidence_ms = ?,
+          match_link_updated_at = ?,
+          match_link_candidates = ?,
+          match_link_error = ?
+        WHERE id = ?
+      `
+      )
+      .run(
+        params.status,
+        params.confidenceMs ?? null,
+        now,
+        params.candidates ? JSON.stringify(params.candidates) : null,
+        params.error ?? null,
+        params.vodId
+      );
   }
 
   // Match metadata
@@ -187,11 +321,24 @@ export class Database {
     const result = this.db.prepare('SELECT * FROM match_metadata WHERE match_id = ?').get(matchId) as any;
     if (!result) return null;
 
+    const normalizeTraits = (rawTraits: any[]) => {
+      const traits = Array.isArray(rawTraits) ? rawTraits : [];
+      return traits
+        .map((t) => ({
+          name: t?.name ?? t?.trait_name ?? t?.traitName ?? '',
+          numUnits: Number(t?.num_units ?? t?.numUnits ?? 0),
+          style: Number(t?.style ?? t?.styleCurrent ?? 0),
+          tierCurrent: Number(t?.tier_current ?? t?.tierCurrent ?? 0),
+          tierTotal: Number(t?.tier_total ?? t?.tierTotal ?? 0),
+        }))
+        .filter((t) => !!t.name && (t.tierCurrent > 0 || t.style > 0));
+    };
+
     return {
       matchId: result.match_id,
       placement: result.placement,
       augments: JSON.parse(result.augments || '[]'),
-      traits: JSON.parse(result.traits || '[]'),
+      traits: normalizeTraits(JSON.parse(result.traits || '[]')),
       finalBoard: JSON.parse(result.final_board || '[]'),
       fetchedAt: result.fetched_at,
     };

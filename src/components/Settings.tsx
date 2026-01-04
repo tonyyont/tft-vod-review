@@ -6,14 +6,24 @@ interface SettingsProps {
   onSettingsChange: () => void;
 }
 
+const REGIONS = ['NA', 'EUW', 'EUNE', 'KR', 'OCE', 'JP', 'BR', 'LAN', 'LAS', 'TR', 'RU'] as const;
+
 export default function Settings({ settings, onBack, onSettingsChange }: SettingsProps) {
   const [folderPath, setFolderPath] = useState(settings.obs_folder_path || '');
   const [apiKey, setApiKey] = useState(settings.riot_api_key || '');
+  const [riotRegion, setRiotRegion] = useState<(typeof REGIONS)[number]>((settings.riot_region as any) || 'NA');
+  const [gameName, setGameName] = useState(settings.riot_game_name || '');
+  const [tagLine, setTagLine] = useState(settings.riot_tag_line || '');
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
 
   useEffect(() => {
     setFolderPath(settings.obs_folder_path || '');
     setApiKey(settings.riot_api_key || '');
+    setRiotRegion((settings.riot_region as any) || 'NA');
+    setGameName(settings.riot_game_name || '');
+    setTagLine(settings.riot_tag_line || '');
   }, [settings]);
 
   const handleSelectFolder = async () => {
@@ -25,10 +35,25 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
 
   const handleSave = async () => {
     setSaving(true);
+    setTestError(null);
     try {
       await window.electronAPI.setSetting('obs_folder_path', folderPath);
-      if (apiKey) {
-        await window.electronAPI.setSetting('riot_api_key', apiKey);
+      if (apiKey.trim()) await window.electronAPI.setSetting('riot_api_key', apiKey.trim());
+      if (riotRegion) await window.electronAPI.setSetting('riot_region', riotRegion);
+      if (gameName.trim()) await window.electronAPI.setSetting('riot_game_name', gameName.trim());
+      if (tagLine.trim()) await window.electronAPI.setSetting('riot_tag_line', tagLine.trim());
+
+      // If Riot fields are present, validate and save puuid
+      const canTest = !!apiKey.trim() && !!gameName.trim() && !!tagLine.trim();
+      if (canTest) {
+        setTesting(true);
+        const res = await window.electronAPI.testRiotConnection({
+          region: riotRegion,
+          gameName: gameName.trim(),
+          tagLine: tagLine.trim(),
+          apiKey: apiKey.trim(),
+        });
+        await window.electronAPI.setSetting('riot_puuid', res.puuid);
       }
       
       // Rescan VODs if folder changed
@@ -39,9 +64,23 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
       onSettingsChange();
     } catch (error) {
       console.error('Error saving settings:', error);
-      alert('Error saving settings. Please try again.');
+      let msg = (error as any)?.message || 'Error saving settings. Please try again.';
+      msg = msg.replace(/^Error invoking remote method '.*?': Error: /, '');
+      setTestError(msg);
+      alert(msg);
     } finally {
       setSaving(false);
+      setTesting(false);
+    }
+  };
+
+  const handleRelinkAll = async () => {
+    try {
+      await window.electronAPI.autoLinkAll();
+      alert('Started auto-linking matches in the background.');
+    } catch (e) {
+      console.error('Error starting auto-link:', e);
+      alert('Error starting auto-link. Please try again.');
     }
   };
 
@@ -115,10 +154,10 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
 
         <div style={{ marginBottom: '30px' }}>
           <label style={{ display: 'block', marginBottom: '8px', color: '#fff', fontSize: '16px', fontWeight: '500' }}>
-            Riot API Key (Optional)
+            Riot Account (Optional)
           </label>
           <p style={{ marginBottom: '12px', color: '#888', fontSize: '14px' }}>
-            Your Riot API key is needed to fetch match metadata. Get one from{' '}
+            Connect your Riot account to auto-link VODs to matches. Your Riot API key is needed. Get one from{' '}
             <a
               href="https://developer.riotgames.com/"
               target="_blank"
@@ -128,6 +167,58 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
               developer.riotgames.com
             </a>
           </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+            <select
+              value={riotRegion}
+              onChange={(e) => setRiotRegion(e.target.value as any)}
+              style={{
+                width: '100%',
+                padding: '10px',
+                backgroundColor: '#1a1a1a',
+                color: '#fff',
+                border: '1px solid #444',
+                borderRadius: '4px',
+                fontSize: '14px',
+              }}
+            >
+              {REGIONS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={gameName}
+              onChange={(e) => setGameName(e.target.value)}
+              placeholder="Game name"
+              style={{
+                width: '100%',
+                padding: '10px',
+                backgroundColor: '#1a1a1a',
+                color: '#fff',
+                border: '1px solid #444',
+                borderRadius: '4px',
+                fontSize: '14px',
+              }}
+            />
+          </div>
+          <input
+            type="text"
+            value={tagLine}
+            onChange={(e) => setTagLine(e.target.value)}
+            placeholder="Tagline"
+            style={{
+              width: '100%',
+              padding: '10px',
+              backgroundColor: '#1a1a1a',
+              color: '#fff',
+              border: '1px solid #444',
+              borderRadius: '4px',
+              fontSize: '14px',
+              marginBottom: '10px',
+            }}
+          />
           <input
             type="password"
             value={apiKey}
@@ -143,6 +234,32 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
               fontSize: '14px'
             }}
           />
+          {testError && (
+            <p style={{ marginTop: '8px', color: '#ff6b6b', fontSize: '12px' }}>
+              {testError}
+            </p>
+          )}
+        </div>
+
+        <div style={{ marginBottom: '24px', display: 'flex', gap: '10px' }}>
+          <button
+            onClick={handleRelinkAll}
+            disabled={saving || testing}
+            style={{
+              padding: '10px 18px',
+              backgroundColor: (saving || testing) ? '#555' : '#444',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: (saving || testing) ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+            }}
+          >
+            Relink Unlinked VODs
+          </button>
+          <div style={{ color: '#888', fontSize: '12px', lineHeight: 1.3, alignSelf: 'center' }}>
+            Runs in the background and updates the list automatically.
+          </div>
         </div>
 
         <button
@@ -159,7 +276,7 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
             fontWeight: '500'
           }}
         >
-          {saving ? 'Saving...' : 'Save Settings'}
+          {(saving || testing) ? 'Saving...' : 'Save Settings'}
         </button>
       </div>
     </div>

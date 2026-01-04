@@ -63,6 +63,14 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
     return vod.reviewText && vod.reviewText.trim().length > 0;
   };
 
+  const linkBadge = (vod: VOD) => {
+    if (vod.matchId) return { text: `Match: ${vod.matchId.slice(-8)}`, color: '#4a9eff' };
+    if (vod.matchLinkStatus === 'linking') return { text: 'Linking…', color: '#ffcc66' };
+    if (vod.matchLinkStatus === 'ambiguous') return { text: 'Needs selection', color: '#ffcc66' };
+    if (vod.matchLinkStatus === 'error') return { text: 'Link error', color: '#ff6b6b' };
+    return null;
+  };
+
   const reviewedCount = vods.filter(hasReview).length;
   const totalCount = vods.length;
 
@@ -154,9 +162,11 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
                   <div style={{ display: 'flex', gap: '20px', fontSize: '14px', color: '#888' }}>
                     <span>{formatDate(vod.createdAt)}</span>
                     <span>{formatFileSize(vod.fileSize)}</span>
-                    {vod.matchId && (
-                      <span style={{ color: '#4a9eff' }}>Match: {vod.matchId.slice(-8)}</span>
-                    )}
+                    {(() => {
+                      const badge = linkBadge(vod);
+                      if (!badge) return null;
+                      return <span style={{ color: badge.color }}>{badge.text}</span>;
+                    })()}
                   </div>
                 </div>
               </div>

@@ -11,6 +11,17 @@ declare global {
       linkMatch: (vodId: number, matchId: string) => Promise<void>;
       fetchMatchMetadata: (matchId: string, region?: string) => Promise<MatchMetadata>;
       getMatchMetadata: (matchId: string) => Promise<MatchMetadata | null>;
+      testRiotConnection: (params: { region: string; gameName: string; tagLine: string; apiKey: string }) => Promise<{ puuid: string }>;
+      autoLinkAll: () => Promise<void>;
+      autoLinkVOD: (vodId: number, opts?: { force?: boolean }) => Promise<void>;
+      getVODLinkCandidates: (vodId: number) => Promise<Array<{
+        matchId: string;
+        matchStartMs: number;
+        matchEndMs: number;
+        placement: number | null;
+        deltaMs: number;
+      }>>;
+      openExternal: (url: string) => Promise<void>;
       selectFolder: () => Promise<string | null>;
     };
   }
@@ -24,6 +35,11 @@ export type VOD = {
   createdAt: number;
   modifiedAt: number;
   matchId: string | null;
+  matchLinkStatus: string | null;
+  matchLinkConfidenceMs: number | null;
+  matchLinkUpdatedAt: number | null;
+  matchLinkCandidates: string[] | null;
+  matchLinkError: string | null;
   reviewText: string | null;
 };
 

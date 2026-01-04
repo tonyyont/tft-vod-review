@@ -1,5 +1,136 @@
 import { Database } from './database.js';
 
+export type RegionalRouting = 'americas' | 'europe' | 'asia' | 'sea';
+
+const REGION_TO_REGIONAL_ROUTING: Record<string, RegionalRouting> = {
+  // Simple dropdown values (recommended UX)
+  NA: 'americas',
+  BR: 'americas',
+  LAN: 'americas',
+  LAS: 'americas',
+
+  EUW: 'europe',
+  EUNE: 'europe',
+  TR: 'europe',
+  RU: 'europe',
+
+  KR: 'asia',
+  JP: 'asia',
+
+  OCE: 'sea',
+};
+
+// Back-compat for platform routing strings used elsewhere in the app or older configs
+const PLATFORM_TO_REGIONAL_ROUTING: Record<string, RegionalRouting> = {
+  na1: 'americas',
+  br1: 'americas',
+  la1: 'americas', // LAN
+  la2: 'americas', // LAS
+
+  euw1: 'europe',
+  eun1: 'europe',
+  tr1: 'europe',
+  ru: 'europe',
+
+  kr: 'asia',
+  jp1: 'asia',
+
+  oc1: 'sea',
+};
+
+export function toRegionalRouting(region: string): RegionalRouting {
+  const normalized = (region || '').trim();
+  const lower = normalized.toLowerCase();
+  if (lower === 'americas' || lower === 'europe' || lower === 'asia' || lower === 'sea') {
+    return lower;
+  }
+  if (REGION_TO_REGIONAL_ROUTING[normalized]) return REGION_TO_REGIONAL_ROUTING[normalized];
+  if (PLATFORM_TO_REGIONAL_ROUTING[lower]) return PLATFORM_TO_REGIONAL_ROUTING[lower];
+  throw new Error(`Unsupported region: ${region}`);
+}
+
+async function riotFetchJson(url: string, apiKey: string): Promise<any> {
+  const response = await fetch(url, {
+    headers: {
+      'X-Riot-Token': apiKey,
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) throw new Error('Not found');
+    if (response.status === 401) {
+      throw new Error('Unauthorized (401). Check your Riot API key (it may be expired).');
+    }
+    if (response.status === 403) {
+      throw new Error('Forbidden (403). Check your Riot API key and permissions.');
+    }
+    if (response.status === 429) throw new Error('Rate limit exceeded. Please try again later.');
+    throw new Error(`API error: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+function normalizeTraits(rawTraits: any[]): any[] {
+  const traits = Array.isArray(rawTraits) ? rawTraits : [];
+  return traits
+    .map((t) => {
+      const name = t?.name ?? t?.trait_name ?? t?.traitName ?? '';
+      const numUnits = t?.num_units ?? t?.numUnits ?? t?.num_units_in_team ?? t?.num_units_in_board ?? t?.num_units_in_current_team;
+      const style = t?.style ?? t?.style_current ?? t?.styleCurrent ?? 0;
+      const tierCurrent = t?.tier_current ?? t?.tierCurrent ?? 0;
+      const tierTotal = t?.tier_total ?? t?.tierTotal ?? 0;
+      return { name, numUnits: Number(numUnits ?? 0), style: Number(style ?? 0), tierCurrent: Number(tierCurrent ?? 0), tierTotal: Number(tierTotal ?? 0) };
+    })
+    // Filter to “active” traits (tierCurrent>0 or style>0), and valid names
+    .filter((t) => !!t.name && (t.tierCurrent > 0 || t.style > 0));
+}
+
+export async function resolvePuuidByRiotId(params: {
+  gameName: string;
+  tagLine: string;
+  region: string; // dropdown value or routing
+  apiKey: string;
+}): Promise<{ puuid: string }> {
+  const regionalRouting = toRegionalRouting(params.region);
+  const baseUrl = `https://${regionalRouting}.api.riotgames.com`;
+  const url = `${baseUrl}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
+    params.gameName
+  )}/${encodeURIComponent(params.tagLine)}`;
+  const data = await riotFetchJson(url, params.apiKey);
+  if (!data?.puuid) throw new Error('Failed to resolve Riot ID');
+  return { puuid: data.puuid };
+}
+
+export async function listTftMatchIdsByPuuid(params: {
+  puuid: string;
+  region: string; // dropdown value or routing
+  apiKey: string;
+  startTimeSec?: number;
+  endTimeSec?: number;
+  count?: number;
+}): Promise<string[]> {
+  const regionalRouting = toRegionalRouting(params.region);
+  const baseUrl = `https://${regionalRouting}.api.riotgames.com`;
+  const qs = new URLSearchParams();
+  if (params.startTimeSec) qs.set('startTime', String(params.startTimeSec));
+  if (params.endTimeSec) qs.set('endTime', String(params.endTimeSec));
+  qs.set('count', String(params.count ?? 20));
+  const url = `${baseUrl}/tft/match/v1/matches/by-puuid/${encodeURIComponent(params.puuid)}/ids?${qs.toString()}`;
+  const data = await riotFetchJson(url, params.apiKey);
+  return Array.isArray(data) ? (data as string[]) : [];
+}
+
+export async function fetchTftMatch(params: {
+  matchId: string;
+  region: string; // dropdown value or routing
+  apiKey: string;
+}): Promise<any> {
+  const regionalRouting = toRegionalRouting(params.region);
+  const baseUrl = `https://${regionalRouting}.api.riotgames.com`;
+  const url = `${baseUrl}/tft/match/v1/matches/${encodeURIComponent(params.matchId)}`;
+  return riotFetchJson(url, params.apiKey);
+}
+
 export async function fetchMatchMetadata(
   matchId: string,
   region: string,
@@ -25,36 +156,20 @@ export async function fetchMatchMetadata(
     throw new Error('Riot API key not configured');
   }
 
-  // Fetch from Riot API
-  const baseUrl = `https://${region}.api.riotgames.com`;
-  const url = `${baseUrl}/tft/match/v1/matches/${matchId}`;
+  const data = await fetchTftMatch({ matchId, region, apiKey });
 
-  const response = await fetch(url, {
-    headers: {
-      'X-Riot-Token': apiKey,
-    },
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error('Match not found');
-    } else if (response.status === 403) {
-      throw new Error('Invalid API key');
-    } else if (response.status === 429) {
-      throw new Error('Rate limit exceeded. Please try again later.');
-    }
-    throw new Error(`API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-
-  // Extract player data (assuming we want the first player or need to identify which player)
-  // For v0, we'll take the first participant
-  const participant = data.info.participants[0];
+  // Extract player data (prefer configured puuid, fall back to first participant)
+  const configuredPuuid = settings['riot_puuid'] || '';
+  const participants = data?.info?.participants || [];
+  const participant =
+    (configuredPuuid
+      ? participants.find((p: any) => p?.puuid === configuredPuuid)
+      : null) || participants[0];
+  if (!participant) throw new Error('Match participants not available');
 
   const placement = participant.placement;
   const augments = participant.augments || [];
-  const traits = participant.traits || [];
+  const traits = normalizeTraits(participant.traits || []);
   const finalBoard = participant.units || [];
 
   // Save to cache
