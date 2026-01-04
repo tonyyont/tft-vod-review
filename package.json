@@ -1,0 +1,68 @@
+{
+  "name": "tft-vod-review",
+  "version": "0.1.0",
+  "description": "Local-first VOD review tool for TFT players",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:electron": "npx tsc -p tsconfig.preload.json && mv dist-electron/preload.js dist-electron/preload.cjs && npx tsc -p tsconfig.node.json || true",
+    "build:all": "npm run build:electron && npm run build",
+    "preview": "vite preview",
+    "postinstall": "npx @electron/rebuild -f -w better-sqlite3",
+    "electron:dev": "npm run build:electron && concurrently \"npm run dev\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
+    "electron:build": "npm run build:all && electron-builder"
+  },
+  "keywords": [
+    "tft",
+    "vod",
+    "review",
+    "league-of-legends"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.9.1",
+    "electron-rebuild": "^3.2.9",
+    "rxjs": "^7.8.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.0.8",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "build": {
+    "appId": "com.tftvod.review",
+    "productName": "TFT VOD Review",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.games"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
