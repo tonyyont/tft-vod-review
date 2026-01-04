@@ -199,7 +199,9 @@ ipcMain.handle('get-vod', async (_event, vodId: number) => {
 
 // Reviews
 ipcMain.handle('save-review', async (_event, vodId: number, reviewText: string) => {
-  return db.saveReview(vodId, reviewText);
+  const result = db.saveReview(vodId, reviewText);
+  mainWindow?.webContents.send('vods-updated');
+  return result;
 });
 
 // Match metadata

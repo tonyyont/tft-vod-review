@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { VOD, MatchMetadata } from '../types/electron';
 
 interface VODDetailProps {
@@ -13,6 +13,23 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
   const [matchIdInput, setMatchIdInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [lastAutosavedAt, setLastAutosavedAt] = useState<number | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const reviewTextRef = useRef(reviewText);
+  const dirtyRef = useRef(dirty);
+  const vodIdRef = useRef(vodId);
+
+  useEffect(() => {
+    reviewTextRef.current = reviewText;
+  }, [reviewText]);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+  useEffect(() => {
+    vodIdRef.current = vodId;
+  }, [vodId]);
 
   useEffect(() => {
     loadVOD();
@@ -24,7 +41,11 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
       const vodData = await window.electronAPI.getVOD(vodId);
       if (vodData) {
         setVOD(vodData);
-        setReviewText(vodData.reviewText || '');
+        const initialReview = vodData.reviewText || '';
+        setReviewText(initialReview);
+        setDirty(false);
+        setSaveError(null);
+        setLastAutosavedAt(null);
         setMatchIdInput(vodData.matchId || '');
 
         // Load match metadata if linked
@@ -46,14 +67,20 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     }
   };
 
-  const handleSaveReview = async () => {
-    if (!vod) return;
+  const handleSaveReview = async (textToSave: string) => {
+    if (!vod) return false;
     setSaving(true);
+    setSaveError(null);
     try {
-      await window.electronAPI.saveReview(vod.id, reviewText);
+      await window.electronAPI.saveReview(vod.id, textToSave);
+      setVOD((prev) => (prev ? { ...prev, reviewText: textToSave } : prev));
+      setLastAutosavedAt(Date.now());
+      setDirty(false);
+      return true;
     } catch (error) {
       console.error('Error saving review:', error);
-      alert('Error saving review. Please try again.');
+      setSaveError('Autosave failed');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -80,13 +107,48 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
 
   // Auto-save review with debounce
   useEffect(() => {
-    if (!vod || saving) return;
+    if (!vod || saving || !dirty) return;
     const timer = setTimeout(() => {
-      handleSaveReview();
+      void handleSaveReview(reviewText);
     }, 2000);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewText]);
+  }, [reviewText, dirty, saving, vod]);
+
+  // Best-effort flush if the component unmounts while still dirty (e.g. fast navigation)
+  useEffect(() => {
+    return () => {
+      if (!dirtyRef.current) return;
+      const text = reviewTextRef.current;
+      const id = vodIdRef.current;
+      void window.electronAPI.saveReview(id, text);
+    };
+  }, []);
+
+  const statusLabel = useMemo(() => {
+    if (saveError) return saveError;
+    if (saving) return 'Saving...';
+    if (dirty) return 'Unsaved changes';
+    if (lastAutosavedAt) return `Autosaved at ${new Date(lastAutosavedAt).toLocaleTimeString()}`;
+    return '';
+  }, [dirty, lastAutosavedAt, saveError, saving]);
+
+  const statusColor = useMemo(() => {
+    if (saveError) return '#ff6b6b';
+    if (dirty) return '#ffcc66';
+    return '#888';
+  }, [dirty, saveError]);
+
+  const handleBackClick = async () => {
+    if (!dirty) return onBack();
+    const ok = await handleSaveReview(reviewText);
+    if (ok) return onBack();
+    const leaveAnyway = window.confirm(
+      "Couldn't autosave your latest changes. Stay on this page and try again?"
+    );
+    if (!leaveAnyway) {
+      onBack();
+    }
+  };
 
   if (loading || !vod) {
     return (
@@ -119,14 +181,15 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
           </p>
         </div>
         <button
-          onClick={onBack}
+          onClick={handleBackClick}
+          disabled={saving}
           style={{
             padding: '8px 16px',
-            backgroundColor: '#444',
+            backgroundColor: saving ? '#555' : (dirty ? '#6b4f00' : '#444'),
             color: '#fff',
             border: 'none',
             borderRadius: '4px',
-            cursor: 'pointer'
+            cursor: saving ? 'not-allowed' : 'pointer'
           }}
         >
           Back to List
@@ -241,13 +304,17 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
               <h3 style={{ fontSize: '16px', color: '#fff' }}>Review</h3>
-              {saving && (
-                <span style={{ fontSize: '12px', color: '#888' }}>Saving...</span>
+              {!!statusLabel && (
+                <span style={{ fontSize: '12px', color: statusColor }}>{statusLabel}</span>
               )}
             </div>
             <textarea
               value={reviewText}
-              onChange={(e) => setReviewText(e.target.value)}
+              onChange={(e) => {
+                setReviewText(e.target.value);
+                setDirty(true);
+                setSaveError(null);
+              }}
               placeholder="Write your review here... What went wrong? What to focus on next time? One thing to improve?"
               style={{
                 flex: 1,
@@ -263,7 +330,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
               }}
             />
             <p style={{ marginTop: '8px', fontSize: '12px', color: '#888' }}>
-              Review auto-saves as you type
+              Review auto-saves as you type (about 2s after you stop typing)
             </p>
           </div>
         </div>
