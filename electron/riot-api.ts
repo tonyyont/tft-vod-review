@@ -131,6 +131,24 @@ export async function fetchTftMatch(params: {
   return riotFetchJson(url, params.apiKey);
 }
 
+function normalizeUnits(rawUnits: any[]): any[] {
+  const units = Array.isArray(rawUnits) ? rawUnits : [];
+  return units.map((u) => {
+    const characterId = u?.characterId ?? u?.character_id ?? u?.character ?? u?.name ?? '';
+    const tier = Number(u?.tier ?? 1);
+    const items = Array.isArray(u?.items) ? u.items : undefined;
+    const itemNames = Array.isArray(u?.itemNames) ? u.itemNames : undefined;
+    // Preserve original fields too for back-compat, but add normalized `characterId`.
+    return {
+      ...u,
+      characterId,
+      tier,
+      ...(items ? { items } : null),
+      ...(itemNames ? { itemNames } : null),
+    };
+  });
+}
+
 export async function fetchMatchMetadata(
   matchId: string,
   region: string,
@@ -138,9 +156,19 @@ export async function fetchMatchMetadata(
 ): Promise<{
   matchId: string;
   placement: number;
+  level: number;
   augments: string[];
   traits: any[];
   finalBoard: any[];
+  stats: {
+    goldLeft: number | null;
+    lastRound: number | null;
+    totalDamageToPlayers: number | null;
+    gameLengthSec: number | null;
+    gameDatetimeMs: number | null;
+    queueId: number | null;
+    tftSetNumber: number | null;
+  };
   fetchedAt: number;
 }> {
   // Check cache first
@@ -168,19 +196,32 @@ export async function fetchMatchMetadata(
   if (!participant) throw new Error('Match participants not available');
 
   const placement = participant.placement;
+  const level = Number(participant?.level ?? 0);
   const augments = participant.augments || [];
   const traits = normalizeTraits(participant.traits || []);
-  const finalBoard = participant.units || [];
+  const finalBoard = normalizeUnits(participant.units || []);
+  const stats = {
+    goldLeft: typeof participant?.gold_left === 'number' ? participant.gold_left : null,
+    lastRound: typeof participant?.last_round === 'number' ? participant.last_round : null,
+    totalDamageToPlayers:
+      typeof participant?.total_damage_to_players === 'number' ? participant.total_damage_to_players : null,
+    gameLengthSec: typeof data?.info?.game_length === 'number' ? data.info.game_length : null,
+    gameDatetimeMs: typeof data?.info?.game_datetime === 'number' ? data.info.game_datetime : null,
+    queueId: typeof data?.info?.queue_id === 'number' ? data.info.queue_id : null,
+    tftSetNumber: typeof data?.info?.tft_set_number === 'number' ? data.info.tft_set_number : null,
+  };
 
   // Save to cache
-  db.saveMatchMetadata(matchId, placement, augments, traits, finalBoard, data);
+  db.saveMatchMetadata(matchId, placement, level, augments, traits, finalBoard, stats, data);
 
   return {
     matchId,
     placement,
+    level,
     augments,
     traits,
     finalBoard,
+    stats,
     fetchedAt: Date.now(),
   };
 }

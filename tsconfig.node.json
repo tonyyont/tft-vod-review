@@ -13,5 +13,5 @@
     "esModuleInterop": true,
     "resolveJsonModule": true
   },
-  "include": ["electron/main.ts", "electron/database.ts", "electron/riot-api.ts", "electron/vod-scanner.ts"]
+  "include": ["electron/**/*.ts"]
 }

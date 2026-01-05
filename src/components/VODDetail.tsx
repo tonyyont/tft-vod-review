@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { VOD, MatchMetadata } from '../types/electron';
+import MatchRow from './MatchRow';
 
 interface VODDetailProps {
   vodId: number;
@@ -402,38 +403,11 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
               <div>
                 {matchMetadata ? (
                   <div>
-                    <div style={{ marginBottom: '12px' }}>
-                      <strong style={{ color: '#4a9eff' }}>Placement: </strong>
-                      <span style={{ color: '#fff', fontSize: '18px', fontWeight: 'bold' }}>
-                        #{matchMetadata.placement}
-                      </span>
+                    <div style={{ marginBottom: '10px', color: '#888', fontSize: '12px' }}>
+                      Match: {matchMetadata.matchId.slice(-8)} • Updated{' '}
+                      {new Date(matchMetadata.fetchedAt).toLocaleString()}
                     </div>
-                    
-                    {matchMetadata.augments.length > 0 && (
-                      <div style={{ marginBottom: '12px' }}>
-                        <strong style={{ color: '#ccc' }}>Augments: </strong>
-                        <div style={{ marginTop: '4px' }}>
-                          {matchMetadata.augments.map((augment, idx) => (
-                            <div key={idx} style={{ color: '#fff', fontSize: '13px' }}>
-                              • {augment}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {matchMetadata.traits.length > 0 && (
-                      <div style={{ marginBottom: '12px' }}>
-                        <strong style={{ color: '#ccc' }}>Traits: </strong>
-                        <div style={{ marginTop: '4px' }}>
-                          {matchMetadata.traits.map((trait, idx) => (
-                            <div key={idx} style={{ color: '#fff', fontSize: '13px' }}>
-                              • {trait.name} ({trait.numUnits})
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <MatchRow metadata={matchMetadata} variant="full" />
                   </div>
                 ) : (
                   <p style={{ color: '#888', fontSize: '14px' }}>

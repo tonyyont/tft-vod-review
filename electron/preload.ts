@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autoLinkVOD: (vodId: number, opts?: { force?: boolean }) => ipcRenderer.invoke('auto-link-vod', vodId, opts),
   getVODLinkCandidates: (vodId: number) => ipcRenderer.invoke('get-vod-link-candidates', vodId),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+  getAssetUrl: (assetKey: string) => {
+    return ipcRenderer.invoke('get-asset-url', assetKey);
+  },
   
   // File dialogs
   selectFolder: () => ipcRenderer.invoke('select-folder'),
@@ -56,6 +59,7 @@ export type ElectronAPI = {
     deltaMs: number;
   }>>;
   openExternal: (url: string) => Promise<void>;
+  getAssetUrl: (assetKey: string) => Promise<string>;
   selectFolder: () => Promise<string | null>;
 };
 
@@ -73,14 +77,25 @@ export type VOD = {
   matchLinkCandidates: string[] | null;
   matchLinkError: string | null;
   reviewText: string | null;
+  matchMetadata?: MatchMetadata | null;
 };
 
 export type MatchMetadata = {
   matchId: string;
   placement: number;
+  level: number;
   augments: string[];
   traits: Trait[];
   finalBoard: Champion[];
+  stats?: {
+    goldLeft: number | null;
+    lastRound: number | null;
+    totalDamageToPlayers: number | null;
+    gameLengthSec: number | null;
+    gameDatetimeMs: number | null;
+    queueId: number | null;
+    tftSetNumber: number | null;
+  };
   fetchedAt: number;
 };
 

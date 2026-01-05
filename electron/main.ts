@@ -4,12 +4,14 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { Database } from './database.js';
 import type { RegionalRouting } from './riot-api.js';
+import { createDDragonAssetService } from './ddragon-assets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
 let db: Database;
+const ddragonAssets = createDDragonAssetService();
 let vodWatcher: fs.FSWatcher | null = null;
 let vodWatchPath: string | null = null;
 let vodRescanTimer: NodeJS.Timeout | null = null;
@@ -188,12 +190,34 @@ async function autoLinkVod(vodId: number, opts?: { force?: boolean }): Promise<v
                   }))
                   .filter((t) => !!t.name && (t.tierCurrent > 0 || t.style > 0));
               };
+              const stats = {
+                goldLeft: typeof participant?.gold_left === 'number' ? participant.gold_left : null,
+                lastRound: typeof participant?.last_round === 'number' ? participant.last_round : null,
+                totalDamageToPlayers:
+                  typeof participant?.total_damage_to_players === 'number' ? participant.total_damage_to_players : null,
+                gameLengthSec: typeof match?.info?.game_length === 'number' ? match.info.game_length : null,
+                gameDatetimeMs: typeof match?.info?.game_datetime === 'number' ? match.info.game_datetime : null,
+                queueId: typeof match?.info?.queue_id === 'number' ? match.info.queue_id : null,
+                tftSetNumber: typeof match?.info?.tft_set_number === 'number' ? match.info.tft_set_number : null,
+              };
+              const normalizeUnits = (rawUnits: any[]) => {
+                const units = Array.isArray(rawUnits) ? rawUnits : [];
+                return units.map((u) => ({
+                  ...u,
+                  characterId: u?.characterId ?? u?.character_id ?? u?.character ?? u?.name ?? '',
+                  tier: Number(u?.tier ?? 1),
+                  items: Array.isArray(u?.items) ? u.items : u?.items,
+                  itemNames: Array.isArray(u?.itemNames) ? u.itemNames : u?.itemNames,
+                }));
+              };
               db.saveMatchMetadata(
                 matchId,
                 participant.placement,
+                Number(participant?.level ?? 0),
                 participant.augments || [],
                 normalizeTraits(participant.traits || []),
-                participant.units || [],
+                normalizeUnits(participant.units || []),
+                stats,
                 match
               );
             }
@@ -494,7 +518,7 @@ ipcMain.handle('fetch-match-metadata', async (_event, matchId: string, region?: 
   const { fetchMatchMetadata } = await import('./riot-api.js');
   const settings = db.getSettings();
   const effectiveRegion = region || settings.riot_region || 'NA';
-  return fetchMatchMetadata(matchId, effectiveRegion, db);
+  return withRiotRateLimit(() => fetchMatchMetadata(matchId, effectiveRegion, db));
 });
 
 ipcMain.handle(
@@ -570,6 +594,10 @@ ipcMain.handle('get-vod-link-candidates', async (_event, vodId: number) => {
 
 ipcMain.handle('get-match-metadata', async (_event, matchId: string) => {
   return db.getMatchMetadata(matchId);
+});
+
+ipcMain.handle('get-asset-url', async (_event, assetKey: string) => {
+  return ddragonAssets.resolveAssetUrl(assetKey);
 });
 
 ipcMain.handle('open-external', async (_event, url: string) => {

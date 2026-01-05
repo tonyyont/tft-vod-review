@@ -43,9 +43,11 @@ export class Database {
       CREATE TABLE IF NOT EXISTS match_metadata (
         match_id TEXT PRIMARY KEY,
         placement INTEGER,
+        level INTEGER,
         augments TEXT,
         traits TEXT,
         final_board TEXT,
+        stats TEXT,
         fetched_at INTEGER,
         raw_data TEXT
       );
@@ -67,6 +69,7 @@ export class Database {
 
     // Best-effort migration for existing user DBs (SQLite doesn't support IF NOT EXISTS for ADD COLUMN)
     this.migrateVodsTable();
+    this.migrateMatchMetadataTable();
   }
 
   private migrateVodsTable(): void {
@@ -86,6 +89,22 @@ export class Database {
     addColumnIfMissing('match_link_updated_at', 'INTEGER');
     addColumnIfMissing('match_link_candidates', 'TEXT');
     addColumnIfMissing('match_link_error', 'TEXT');
+  }
+
+  private migrateMatchMetadataTable(): void {
+    const cols = this.db
+      .prepare(`PRAGMA table_info(match_metadata)`)
+      .all() as Array<{ name: string }>;
+    const existing = new Set(cols.map(c => c.name));
+
+    const addColumnIfMissing = (name: string, ddlType: string) => {
+      if (existing.has(name)) return;
+      this.db.exec(`ALTER TABLE match_metadata ADD COLUMN ${name} ${ddlType};`);
+      existing.add(name);
+    };
+
+    addColumnIfMissing('level', 'INTEGER');
+    addColumnIfMissing('stats', 'TEXT');
   }
 
   // Settings
@@ -117,6 +136,7 @@ export class Database {
     matchLinkCandidates: string[] | null;
     matchLinkError: string | null;
     reviewText: string | null;
+    matchMetadata: any | null;
   }> {
     const rows = this.db.prepare('SELECT * FROM vods ORDER BY created_at DESC').all() as Array<{
       id: number;
@@ -147,6 +167,7 @@ export class Database {
       matchLinkCandidates: row.match_link_candidates ? JSON.parse(row.match_link_candidates) : null,
       matchLinkError: row.match_link_error,
       reviewText: row.review_text,
+      matchMetadata: row.match_id ? this.getMatchMetadata(row.match_id) : null,
     }));
   }
 
@@ -313,9 +334,11 @@ export class Database {
   getMatchMetadata(matchId: string): {
     matchId: string;
     placement: number;
+    level: number;
     augments: string[];
     traits: any[];
     finalBoard: any[];
+    stats: any;
     fetchedAt: number;
   } | null {
     const result = this.db.prepare('SELECT * FROM match_metadata WHERE match_id = ?').get(matchId) as any;
@@ -334,12 +357,49 @@ export class Database {
         .filter((t) => !!t.name && (t.tierCurrent > 0 || t.style > 0));
     };
 
+    const deriveFromRaw = (raw: any) => {
+      const participants = raw?.info?.participants || [];
+      const settings = this.getSettings();
+      const puuid = settings['riot_puuid'] || '';
+      const participant =
+        (puuid ? participants.find((p: any) => p?.puuid === puuid) : null) || participants[0] || null;
+      return {
+        level: Number(participant?.level ?? 0),
+        stats: {
+          goldLeft: typeof participant?.gold_left === 'number' ? participant.gold_left : null,
+          lastRound: typeof participant?.last_round === 'number' ? participant.last_round : null,
+          totalDamageToPlayers:
+            typeof participant?.total_damage_to_players === 'number' ? participant.total_damage_to_players : null,
+          gameLengthSec: typeof raw?.info?.game_length === 'number' ? raw.info.game_length : null,
+          gameDatetimeMs: typeof raw?.info?.game_datetime === 'number' ? raw.info.game_datetime : null,
+          queueId: typeof raw?.info?.queue_id === 'number' ? raw.info.queue_id : null,
+          tftSetNumber: typeof raw?.info?.tft_set_number === 'number' ? raw.info.tft_set_number : null,
+        },
+      };
+    };
+
+    const rawData = result.raw_data ? JSON.parse(result.raw_data) : null;
+    const derived = rawData ? deriveFromRaw(rawData) : { level: 0, stats: {} };
+    const normalizeUnits = (rawUnits: any[]) => {
+      const units = Array.isArray(rawUnits) ? rawUnits : [];
+      return units.map((u) => ({
+        ...u,
+        characterId: u?.characterId ?? u?.character_id ?? u?.character ?? u?.name ?? '',
+        tier: Number(u?.tier ?? 1),
+        // Preserve both forms; UI prefers numeric items then itemNames
+        items: Array.isArray(u?.items) ? u.items : u?.items,
+        itemNames: Array.isArray(u?.itemNames) ? u.itemNames : u?.itemNames,
+      }));
+    };
+
     return {
       matchId: result.match_id,
       placement: result.placement,
+      level: typeof result.level === 'number' ? result.level : derived.level,
       augments: JSON.parse(result.augments || '[]'),
       traits: normalizeTraits(JSON.parse(result.traits || '[]')),
-      finalBoard: JSON.parse(result.final_board || '[]'),
+      finalBoard: normalizeUnits(JSON.parse(result.final_board || '[]')),
+      stats: result.stats ? JSON.parse(result.stats || '{}') : derived.stats,
       fetchedAt: result.fetched_at,
     };
   }
@@ -347,22 +407,26 @@ export class Database {
   saveMatchMetadata(
     matchId: string,
     placement: number,
+    level: number,
     augments: string[],
     traits: any[],
     finalBoard: any[],
+    stats: any,
     rawData: any
   ): void {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO match_metadata 
-      (match_id, placement, augments, traits, final_board, fetched_at, raw_data)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (match_id, placement, level, augments, traits, final_board, stats, fetched_at, raw_data)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       matchId,
       placement,
+      level,
       JSON.stringify(augments),
       JSON.stringify(traits),
       JSON.stringify(finalBoard),
+      JSON.stringify(stats ?? {}),
       Date.now(),
       JSON.stringify(rawData)
     );

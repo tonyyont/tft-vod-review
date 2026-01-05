@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
-import type { VOD } from '../types/electron';
+import { useCallback, useEffect, useState } from 'react';
+import type { VOD, MatchMetadata } from '../types/electron';
+import MatchRow, { MatchRowSkeleton } from './MatchRow';
 
 interface VODListProps {
   onVODSelect: (vodId: number) => void;
@@ -8,39 +9,99 @@ interface VODListProps {
 
 export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) {
   const [vods, setVODs] = useState<VOD[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [matchCache, setMatchCache] = useState<Record<string, MatchMetadata | null | 'loading' | undefined>>({});
 
   useEffect(() => {
     let isMounted = true;
-    loadVODs();
+    void loadVODs({ initial: true });
+
+    let refreshTimer: number | null = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        if (!isMounted) return;
+        void loadVODs({ initial: false });
+      }, 250);
+    };
 
     const unsubscribe = window.electronAPI.onVodsUpdated(() => {
-      if (isMounted) loadVODs();
+      if (isMounted) scheduleRefresh();
     });
 
     const onFocus = () => {
-      if (isMounted) loadVODs();
+      if (isMounted) scheduleRefresh();
     };
     window.addEventListener('focus', onFocus);
 
     return () => {
       isMounted = false;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
       unsubscribe?.();
       window.removeEventListener('focus', onFocus);
     };
   }, []);
 
-  const loadVODs = async () => {
-    setLoading(true);
+  useEffect(() => {
+    // Seed matchCache from DB-provided matchMetadata so the list renders instantly (same as detail view behavior).
+    const next: Record<string, MatchMetadata> = {};
+    for (const v of vods) {
+      if (!v.matchId) continue;
+      if (!v.matchMetadata) continue;
+      next[v.matchId] = v.matchMetadata;
+    }
+    if (Object.keys(next).length) {
+      setMatchCache((prev) => ({ ...next, ...prev }));
+    }
+  }, [vods]);
+
+  const loadVODs = async (opts: { initial: boolean }) => {
+    if (opts.initial) setInitialLoading(true);
+    else setRefreshing(true);
     try {
       const vodList = await window.electronAPI.getVODs();
       setVODs(vodList);
     } catch (error) {
       console.error('Error loading VODs:', error);
     } finally {
-      setLoading(false);
+      if (opts.initial) setInitialLoading(false);
+      else setRefreshing(false);
     }
   };
+
+  const ensureMatch = useCallback((matchId: string) => {
+    if (!matchId) return;
+    let shouldFetch = false;
+    setMatchCache((prev) => {
+      if (prev[matchId] !== undefined) return prev;
+      shouldFetch = true;
+      return { ...prev, [matchId]: 'loading' };
+    });
+    if (!shouldFetch) return;
+
+    void (async () => {
+      try {
+        // fetchMatchMetadata is cache-aware (returns cached immediately if present)
+        const md = await window.electronAPI.fetchMatchMetadata(matchId);
+        setMatchCache((prev) => ({ ...prev, [matchId]: md }));
+      } catch {
+        setMatchCache((prev) => ({ ...prev, [matchId]: null }));
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    // Eagerly fetch for the first screenful so icons show without hover.
+    // Keep this conservative to avoid spamming Riot on huge lists.
+    const matchIds: string[] = [];
+    for (const v of vods) {
+      if (!v.matchId) continue;
+      matchIds.push(v.matchId);
+      if (matchIds.length >= 12) break;
+    }
+    for (const id of matchIds) ensureMatch(id);
+  }, [ensureMatch, vods]);
 
   const formatDate = (timestamp: number) => {
     return new Date(timestamp).toLocaleDateString('en-US', {
@@ -74,7 +135,7 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
   const reviewedCount = vods.filter(hasReview).length;
   const totalCount = vods.length;
 
-  if (loading) {
+  if (initialLoading) {
     return (
       <div style={{ padding: '40px', textAlign: 'center', color: '#ccc' }}>
         Loading VODs...
@@ -99,6 +160,7 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
           </h1>
           <p style={{ color: '#888', fontSize: '14px' }}>
             {totalCount} VODs • {reviewedCount} reviewed ({totalCount > 0 ? Math.round((reviewedCount / totalCount) * 100) : 0}%)
+            {refreshing ? <span style={{ marginLeft: 10, color: '#666' }}>Refreshing…</span> : null}
           </p>
         </div>
         <button
@@ -135,8 +197,8 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
                   cursor: 'pointer',
                   border: '1px solid #333',
                   display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  flexDirection: 'column',
+                  gap: '10px',
                   transition: 'background-color 0.2s'
                 }}
                 onMouseEnter={(e) => {
@@ -146,7 +208,7 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
                   e.currentTarget.style.backgroundColor = '#2a2a2a';
                 }}
               >
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, width: '100%' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
                     <span style={{
                       fontSize: '18px',
@@ -159,7 +221,7 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
                       {vod.fileName}
                     </span>
                   </div>
-                  <div style={{ display: 'flex', gap: '20px', fontSize: '14px', color: '#888' }}>
+                  <div style={{ display: 'flex', gap: '20px', fontSize: '14px', color: '#888', flexWrap: 'wrap' }}>
                     <span>{formatDate(vod.createdAt)}</span>
                     <span>{formatFileSize(vod.fileSize)}</span>
                     {(() => {
@@ -169,6 +231,24 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
                     })()}
                   </div>
                 </div>
+
+                {!!vod.matchId && (
+                  <div style={{ width: '100%' }} onMouseEnter={() => ensureMatch(vod.matchId!)}>
+                    {(() => {
+                      const entry = matchCache[vod.matchId!];
+                      const fallback = vod.matchMetadata ?? undefined;
+                      const effective = entry && entry !== 'loading' ? entry : fallback;
+                      if (effective) return <MatchRow metadata={effective} variant="compact" />;
+                      if (entry === 'loading') return <MatchRowSkeleton compact />;
+                      if (entry === undefined) return <MatchRowSkeleton compact />;
+                      return (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #333', color: '#888', fontSize: 12 }}>
+                          Match metadata unavailable
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             ))}
           </div>
