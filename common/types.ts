@@ -49,6 +49,7 @@ export type VOD = {
   id: number;
   filePath: string;
   fileName: string;
+  displayTitle: string | null;
   fileSize: number;
   createdAt: number;
   modifiedAt: number;

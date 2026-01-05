@@ -14,6 +14,9 @@ export function createRiotRateLimiter(params?: {
 
   let lastRequestAt = 0;
   let recentRequests: number[] = []; // timestamps (ms) within rolling windowMs
+  // IMPORTANT: this must be concurrency-safe. Multiple callers can call `withRiotRateLimit`
+  // at the same time, so we serialize all slots through a single promise chain.
+  let queue: Promise<void> = Promise.resolve();
 
   async function waitForSlot(): Promise<void> {
     // Min interval
@@ -36,8 +39,18 @@ export function createRiotRateLimiter(params?: {
   }
 
   async function withRiotRateLimit<T>(fn: () => Promise<T>): Promise<T> {
-    await waitForSlot();
-    return fn();
+    const run = async () => {
+      await waitForSlot();
+      return fn();
+    };
+
+    // Serialize runs; also ensure the queue keeps flowing even if one run rejects.
+    const resultPromise = queue.then(run, run);
+    queue = resultPromise.then(
+      () => undefined,
+      () => undefined,
+    );
+    return resultPromise;
   }
 
   return { withRiotRateLimit };

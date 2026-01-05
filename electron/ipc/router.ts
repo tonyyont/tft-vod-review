@@ -36,6 +36,7 @@ export function registerIpcHandlers(params: {
       })
       .optional(),
     assetKey: z.string().min(1).max(256),
+    vodTitle: z.string().trim().max(160).nullable(),
   };
 
   function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
@@ -95,6 +96,15 @@ export function registerIpcHandlers(params: {
     return result;
   });
 
+  params.ipcMain.handle('set-vod-title', async (_event, vodId: number, title: string | null) => {
+    const safeVodId = parseOrThrow(IpcSchemas.vodId, vodId, 'vod id');
+    const safeTitle = parseOrThrow(IpcSchemas.vodTitle, title, 'vod title');
+    const normalized = typeof safeTitle === 'string' ? (safeTitle.trim() || null) : null;
+    const result = params.db.setVODTitle(safeVodId, normalized);
+    params.getMainWindow()?.webContents.send('vods-updated');
+    return result;
+  });
+
   // Match metadata
   params.ipcMain.handle('link-match', async (_event, vodId: number, matchId: string) => {
     const safeVodId = parseOrThrow(IpcSchemas.vodId, vodId, 'vod id');
@@ -136,6 +146,7 @@ export function registerIpcHandlers(params: {
   params.ipcMain.handle('auto-link-vod', async (_event, vodId: number, opts?: { force?: boolean }) => {
     const safeVodId = parseOrThrow(IpcSchemas.vodId, vodId, 'vod id');
     const safeOpts = parseOrThrow(IpcSchemas.forceOpts, opts, 'options');
+    console.log('[ipc] auto-link-vod', { vodId: safeVodId, force: !!safeOpts?.force });
     await params.autoLinkVod(safeVodId, safeOpts);
   });
 

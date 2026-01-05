@@ -8,17 +8,35 @@ export type RiotFormValues = {
   apiKey: string;
 };
 
+function normalizeApiKey(raw: string): string {
+  const s = String(raw ?? '').trim().replace(/^["']|["']$/g, '');
+  if (!s) return '';
+
+  // If user pasted a header or other wrapper, try to extract the RGAPI token.
+  const rgapiMatch = s.match(/RGAPI-[0-9a-fA-F-]{16,}/);
+  if (rgapiMatch?.[0]) return rgapiMatch[0].trim();
+
+  // Common paste formats:
+  // - "X-Riot-Token: RGAPI-..."
+  // - "Bearer RGAPI-..."
+  const lower = s.toLowerCase();
+  if (lower.startsWith('bearer ')) return s.slice('bearer '.length).trim();
+  if (s.includes(':')) return s.split(':').slice(1).join(':').trim();
+
+  return s;
+}
+
 export function normalizeElectronInvokeError(err: unknown): string {
   const raw = (err as any)?.message || String(err);
   return String(raw).replace(/^Error invoking remote method '.*?': Error: /, '');
 }
 
 export function canTestRiot(values: RiotFormValues): boolean {
-  return !!values.apiKey.trim() && !!values.gameName.trim() && !!values.tagLine.trim();
+  return !!normalizeApiKey(values.apiKey) && !!values.gameName.trim() && !!values.tagLine.trim();
 }
 
 export async function persistRiotSettings(values: RiotFormValues): Promise<void> {
-  const apiKey = values.apiKey.trim();
+  const apiKey = normalizeApiKey(values.apiKey);
   const gameName = values.gameName.trim();
   const tagLine = values.tagLine.trim();
 
@@ -33,7 +51,7 @@ export async function testAndPersistPuuid(values: RiotFormValues): Promise<strin
     region: values.region,
     gameName: values.gameName.trim(),
     tagLine: values.tagLine.trim(),
-    apiKey: values.apiKey.trim(),
+    apiKey: normalizeApiKey(values.apiKey),
   });
   await window.electronAPI.setSetting('riot_puuid', res.puuid);
   return res.puuid;

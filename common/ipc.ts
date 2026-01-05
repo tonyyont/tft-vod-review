@@ -20,6 +20,7 @@ export type ElectronAPI = {
 
   // Reviews
   saveReview: (vodId: number, reviewText: string) => Promise<void>;
+  setVODTitle: (vodId: number, title: string | null) => Promise<void>;
 
   // Match metadata
   linkMatch: (vodId: number, matchId: string) => Promise<void>;

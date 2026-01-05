@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { VOD, MatchMetadata } from '../types/electron';
 import MatchRow from './MatchRow';
+import { normalizeElectronInvokeError } from '../lib/riot';
+import { deriveVODTitle } from '../lib/vodTitle';
 
 interface VODDetailProps {
   vodId: number;
@@ -26,6 +28,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
   }>>([]);
   const [linkingAction, setLinkingAction] = useState(false);
   const [settings, setSettings] = useState<Record<string, string>>({});
+  const linkActionInFlightRef = useRef(false);
 
   const reviewTextRef = useRef(reviewText);
   const dirtyRef = useRef(dirty);
@@ -41,8 +44,10 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     vodIdRef.current = vodId;
   }, [vodId]);
 
-  const loadVOD = useCallback(async () => {
-    setLoading(true);
+  const loadVOD = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setLoading(true);
+    }
     try {
       const s = await window.electronAPI.getSettings();
       setSettings(s);
@@ -87,6 +92,14 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     void loadVOD();
   }, [loadVOD]);
 
+  // Keep the detail view in sync with background rescans/auto-link updates.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onVodsUpdated(() => {
+      void loadVOD({ silent: true });
+    });
+    return () => unsubscribe();
+  }, [loadVOD]);
+
   const tacticsRegionSegment = useMemo(() => {
     const r = (settings.riot_region || 'NA').toLowerCase();
     const allowed = new Set(['na', 'euw', 'eune', 'kr', 'oce', 'jp', 'br', 'lan', 'las', 'tr', 'ru']);
@@ -127,16 +140,26 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
 
   const handleRetryAutoLink = async (opts?: { force?: boolean }) => {
     if (!vod) return;
+    if (linkActionInFlightRef.current) return;
+    linkActionInFlightRef.current = true;
     setLinkingAction(true);
     setLinkError(null);
+    // Optimistic UI: show linking immediately even if IPC dispatch is delayed.
+    setVOD((prev) => (prev ? { ...prev, matchLinkStatus: 'linking', matchLinkError: null } : prev));
     try {
-      await window.electronAPI.autoLinkVOD(vod.id, opts);
-      await loadVOD();
+      // Start auto-link and immediately refresh to show `linking` state.
+      // We intentionally don't await the full auto-link run here since it may take a while under rate limiting.
+      void window.electronAPI.autoLinkVOD(vod.id, opts).catch((error) => {
+        console.error('Error retrying auto-link:', error);
+        setLinkError(normalizeElectronInvokeError(error) || 'Error retrying auto-link. Please try again.');
+      });
+      await loadVOD({ silent: true });
     } catch (error) {
       console.error('Error retrying auto-link:', error);
-      setLinkError('Error retrying auto-link. Please try again.');
+      setLinkError(normalizeElectronInvokeError(error) || 'Error retrying auto-link. Please try again.');
     } finally {
       setLinkingAction(false);
+      linkActionInFlightRef.current = false;
     }
   };
 
@@ -203,10 +226,28 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     }
   };
 
-  if (loading || !vod) {
+  const displayTitle = useMemo(() => {
+    if (!vod) return '';
+    const t = String(vod.displayTitle ?? '').trim();
+    if (t) return t;
+    return deriveVODTitle({ vod, metadata: matchMetadata });
+  }, [matchMetadata, vod]);
+
+  const handleRename = async () => {
+    if (!vod) return;
+    const current = String(vod.displayTitle ?? '').trim() || displayTitle;
+    const input = window.prompt('VOD title (leave empty to clear):', current);
+    if (input === null) return;
+    const next = input.trim();
+    const value = next ? next : null;
+    setVOD((prev) => (prev ? { ...prev, displayTitle: value } : prev));
+    await window.electronAPI.setVODTitle(vod.id, value);
+  };
+
+  if (!vod) {
     return (
       <div style={{ padding: '40px', textAlign: 'center', color: '#ccc' }}>
-        Loading...
+        {loading ? 'Loading...' : 'No VOD found.'}
       </div>
     );
   }
@@ -227,26 +268,42 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
       }}>
         <div style={{ flex: 1 }}>
           <h2 style={{ fontSize: '18px', color: '#fff', marginBottom: '4px' }}>
-            {vod.fileName}
+            {displayTitle}
           </h2>
           <p style={{ color: '#888', fontSize: '12px' }}>
             {new Date(vod.createdAt).toLocaleString()}
           </p>
         </div>
-        <button
-          onClick={handleBackClick}
-          disabled={saving}
-          style={{
-            padding: '8px 16px',
-            backgroundColor: saving ? '#555' : (dirty ? '#6b4f00' : '#444'),
-            color: '#fff',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: saving ? 'not-allowed' : 'pointer'
-          }}
-        >
-          Back to List
-        </button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button
+            onClick={() => void handleRename()}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#1a1a1a',
+              color: '#ddd',
+              border: '1px solid #333',
+              borderRadius: 8,
+              cursor: 'pointer',
+              fontSize: 13,
+            }}
+          >
+            Rename
+          </button>
+          <button
+            onClick={handleBackClick}
+            disabled={saving}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: saving ? '#555' : (dirty ? '#6b4f00' : '#444'),
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: saving ? 'not-allowed' : 'pointer'
+            }}
+          >
+            Back to List
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}

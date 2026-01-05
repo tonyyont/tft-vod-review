@@ -18,6 +18,7 @@ const api: ElectronAPI = {
   
   // Reviews
   saveReview: (vodId: number, reviewText: string) => ipcRenderer.invoke('save-review', vodId, reviewText),
+  setVODTitle: (vodId: number, title: string | null) => ipcRenderer.invoke('set-vod-title', vodId, title),
   
   // Match metadata
   linkMatch: (vodId: number, matchId: string) => ipcRenderer.invoke('link-match', vodId, matchId),

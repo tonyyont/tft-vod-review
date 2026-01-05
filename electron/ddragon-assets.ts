@@ -4,6 +4,25 @@ type DDragonVersion = string;
 
 const DDRAGON_BASE = 'https://ddragon.leagueoflegends.com';
 
+// Guardrail: some TFT datasets include sprite-sheet filenames like "tft-champion5.png".
+// These are not per-icon files and will render as a clipped atlas when used in <img>.
+export function isTftAtlasFilename(full: string): boolean {
+  return /^tft-(champion|item|trait|augment)\d+\.png$/i.test(String(full || '').trim());
+}
+
+export function isTftSplashFilename(full: string): boolean {
+  return /_splash\.(png|jpg|jpeg|webp)$/i.test(String(full || '').trim());
+}
+
+export function preferNonSplashImageInfo(existing: ImageInfo, candidate: ImageInfo): ImageInfo {
+  const existingSplash = isTftSplashFilename(existing.full);
+  const candidateSplash = isTftSplashFilename(candidate.full);
+  if (existingSplash && !candidateSplash) return candidate;
+  if (!existingSplash && candidateSplash) return existing;
+  // If both are splash or both are non-splash, keep the first-seen (stable).
+  return existing;
+}
+
 function parseAssetKey(assetKey: string): { kind: AssetKind; id: string } | null {
   const key = String(assetKey || '').trim();
   const idx = key.indexOf(':');
@@ -36,6 +55,18 @@ function buildImgUrl(version: string, group: string, full: string): string {
   return `${DDRAGON_BASE}/cdn/${encodeURIComponent(version)}/img/${encodeURIComponent(group)}/${encodeURIComponent(full)}`;
 }
 
+function buildSafeImgUrl(opts: { version: string; group: string; full: string; assetKey: string }): string {
+  if (isTftAtlasFilename(opts.full)) {
+    console.warn('[asset] blocked atlas filename from DDragon (use image.full only)', {
+      assetKey: opts.assetKey,
+      group: opts.group,
+      full: opts.full,
+    });
+    return placeholderDataUrl();
+  }
+  return buildImgUrl(opts.version, opts.group, opts.full);
+}
+
 type ImageInfo = { full: string; group: string };
 
 function getImageInfo(obj: any): ImageInfo | null {
@@ -44,6 +75,15 @@ function getImageInfo(obj: any): ImageInfo | null {
   const group = image?.group;
   if (typeof full === 'string' && full && typeof group === 'string' && group) return { full, group };
   return null;
+}
+
+function deriveLolChampionKeyFromTftId(tftId: string): string | null {
+  const m = String(tftId || '').trim().match(/^TFT\d+_(.+)$/i);
+  if (!m) return null;
+  const key = m[1];
+  if (!key) return null;
+  // Some TFT ids may include suffixes, but start simple; refine as needed.
+  return key;
 }
 
 function normalizeIdVariants(id: string): string[] {
@@ -69,11 +109,26 @@ function addAliases(map: Map<string, ImageInfo>, ids: Array<string | undefined |
   }
 }
 
+function addAliasesPreferNonSplash(map: Map<string, ImageInfo>, ids: Array<string | undefined | null>, img: ImageInfo) {
+  for (const v of ids) {
+    if (typeof v !== 'string') continue;
+    for (const k of normalizeIdVariants(v)) {
+      const existing = map.get(k);
+      if (!existing) {
+        map.set(k, img);
+        continue;
+      }
+      map.set(k, preferNonSplashImageInfo(existing, img));
+    }
+  }
+}
+
 export function createDDragonAssetService() {
   let versionPromise: Promise<DDragonVersion> | null = null;
   let indexesPromise: Promise<{
     version: DDragonVersion;
     championsById: Map<string, ImageInfo>;
+    lolChampionIconsByKey: Map<string, string>;
     traitsById: Map<string, ImageInfo>;
     augmentsById: Map<string, ImageInfo>;
     itemsByNumericId: Map<number, ImageInfo>;
@@ -98,14 +153,16 @@ export function createDDragonAssetService() {
       const version = await getLatestVersion();
       const base = `${DDRAGON_BASE}/cdn/${encodeURIComponent(version)}/data/en_US`;
 
-      const [championsJson, traitsJson, itemsJson, augmentsJson] = await Promise.all([
+      const [championsJson, traitsJson, itemsJson, augmentsJson, lolChampionsIndex] = await Promise.all([
         fetchJson(`${base}/tft-champion.json`),
         fetchJson(`${base}/tft-trait.json`),
         fetchJson(`${base}/tft-item.json`),
         fetchJson(`${base}/tft-augments.json`),
+        fetchJson(`${base}/champion.json`),
       ]);
 
       const championsById = new Map<string, ImageInfo>();
+      const lolChampionIconsByKey = new Map<string, string>();
       const traitsById = new Map<string, ImageInfo>();
       const augmentsById = new Map<string, ImageInfo>();
       const itemsByNumericId = new Map<number, ImageInfo>();
@@ -122,7 +179,8 @@ export function createDDragonAssetService() {
       ingestDataObject(championsJson, (key, entry) => {
         const img = getImageInfo(entry);
         if (!img) return;
-        addAliases(
+        // Prefer non-splash images when multiple entries map to the same champion ID.
+        addAliasesPreferNonSplash(
           championsById,
           [
             key,
@@ -175,7 +233,16 @@ export function createDDragonAssetService() {
         }
       });
 
-      return { version, championsById, traitsById, augmentsById, itemsByNumericId, itemsById };
+      // LoL champion square icons (per Riot docs): /img/champion/<ChampionKey>.png
+      // The champion.json index includes a key and an image.full (usually <ChampionKey>.png).
+      ingestDataObject(lolChampionsIndex, (key, entry) => {
+        const imgFull = entry?.image?.full;
+        if (typeof key === 'string' && key && typeof imgFull === 'string' && imgFull) {
+          lolChampionIconsByKey.set(key, imgFull);
+        }
+      });
+
+      return { version, championsById, lolChampionIconsByKey, traitsById, augmentsById, itemsByNumericId, itemsById };
     })();
     return indexesPromise;
   }
@@ -189,25 +256,35 @@ export function createDDragonAssetService() {
       const idx = await loadIndexes();
 
       if (parsed.kind === 'champion') {
+        // Prefer LoL champion square icons when possible (per Riot docs):
+        // https://ddragon.leagueoflegends.com/cdn/<version>/img/champion/<ChampionKey>.png
+        const lolKey = deriveLolChampionKeyFromTftId(parsed.id);
+        if (lolKey) {
+          const iconFull = idx.lolChampionIconsByKey.get(lolKey);
+          if (iconFull) {
+            return buildSafeImgUrl({ version: idx.version, group: 'champion', full: iconFull, assetKey });
+          }
+        }
+
         const img = idx.championsById.get(parsed.id);
-        return img ? buildImgUrl(idx.version, img.group, img.full) : placeholderDataUrl();
+        return img ? buildSafeImgUrl({ version: idx.version, group: img.group, full: img.full, assetKey }) : placeholderDataUrl();
       }
       if (parsed.kind === 'trait') {
         const img = idx.traitsById.get(parsed.id);
-        return img ? buildImgUrl(idx.version, img.group, img.full) : placeholderDataUrl();
+        return img ? buildSafeImgUrl({ version: idx.version, group: img.group, full: img.full, assetKey }) : placeholderDataUrl();
       }
       if (parsed.kind === 'augment') {
         const img = idx.augmentsById.get(parsed.id);
-        return img ? buildImgUrl(idx.version, img.group, img.full) : placeholderDataUrl();
+        return img ? buildSafeImgUrl({ version: idx.version, group: img.group, full: img.full, assetKey }) : placeholderDataUrl();
       }
       if (parsed.kind === 'item') {
         const maybeNum = Number(parsed.id);
         if (Number.isFinite(maybeNum) && maybeNum > 0) {
           const img = idx.itemsByNumericId.get(maybeNum);
-          return img ? buildImgUrl(idx.version, img.group, img.full) : placeholderDataUrl();
+          return img ? buildSafeImgUrl({ version: idx.version, group: img.group, full: img.full, assetKey }) : placeholderDataUrl();
         }
         const img = idx.itemsById.get(parsed.id);
-        return img ? buildImgUrl(idx.version, img.group, img.full) : placeholderDataUrl();
+        return img ? buildSafeImgUrl({ version: idx.version, group: img.group, full: img.full, assetKey }) : placeholderDataUrl();
       }
       return placeholderDataUrl();
     } catch {

@@ -107,6 +107,13 @@ function ItemIcon({ itemKey }: { itemKey: string | number }) {
       src={src}
       title={`Item ${String(itemKey)}`}
       className="unitItemIcon"
+      style={{
+        width: 14,
+        height: 14,
+        display: 'block',
+        objectFit: 'contain',
+        objectPosition: '50% 50%',
+      }}
     />
   );
 }
@@ -119,13 +126,46 @@ function UnitTile({ unit, size }: { unit: Champion; size: number }) {
   const namedItems = Array.isArray(unit.itemNames) ? unit.itemNames.slice(0, 3) : [];
   const itemsToShow: Array<string | number> = numericItems.length ? numericItems : namedItems;
 
+  // DDragon TFT frequently returns landscape "splash" art for champions (e.g. *_splash.png).
+  // Prefer a non-splash variant if it exists, but fall back to splash if it 404s.
+  const preferredSrc = useMemo(() => {
+    if (!src) return null;
+    return src.replace(/_splash(\.(png|jpg|jpeg|webp))$/i, '$1');
+  }, [src]);
+
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!src) {
+      setImgSrc(null);
+      return;
+    }
+    // Chain: TFT non-splash -> TFT splash
+    // (LoL square selection is handled in the main-process DDragon resolver.)
+    setImgSrc(preferredSrc || src);
+  }, [preferredSrc, src]);
+
   return (
     <div style={{ width: size, height: size, position: 'relative', flex: '0 0 auto' }} className="unitTile">
-      {src ? (
+      {imgSrc ? (
         <img
-          src={src}
+          src={imgSrc}
           title={champId || 'Unknown unit'}
           className="unitTile__img"
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            objectFit: 'contain',
+            objectPosition: '50% 50%',
+          }}
+          onError={() => {
+            // Fall back along the chain: non-splash -> splash.
+            if (!src) return;
+            if (imgSrc === preferredSrc && src) {
+              setImgSrc(src);
+              return;
+            }
+          }}
         />
       ) : null}
 
@@ -191,6 +231,9 @@ function TraitChip({ trait }: { trait: Trait }) {
             height: 18,
             borderRadius: 4,
             backgroundColor: '#111',
+            display: 'block',
+            objectFit: 'contain',
+            objectPosition: '50% 50%',
           }}
         />
       ) : null}
@@ -232,6 +275,9 @@ function AugmentChip({ augment }: { augment: string }) {
             height: 22,
             borderRadius: 4,
             backgroundColor: '#111',
+            display: 'block',
+            objectFit: 'contain',
+            objectPosition: '50% 50%',
           }}
         />
       ) : null}

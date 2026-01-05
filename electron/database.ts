@@ -27,6 +27,7 @@ export class Database {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         file_path TEXT UNIQUE NOT NULL,
         file_name TEXT NOT NULL,
+        display_title TEXT,
         file_size INTEGER,
         created_at INTEGER,
         modified_at INTEGER,
@@ -172,6 +173,7 @@ export class Database {
     addColumnIfMissing('match_link_updated_at', 'INTEGER');
     addColumnIfMissing('match_link_candidates', 'TEXT');
     addColumnIfMissing('match_link_error', 'TEXT');
+    addColumnIfMissing('display_title', 'TEXT');
   }
 
   private migrateMatchMetadataTable(): void {
@@ -210,6 +212,7 @@ export class Database {
       id: number;
       file_path: string;
       file_name: string;
+      display_title: string | null;
       file_size: number;
       created_at: number;
       modified_at: number;
@@ -225,6 +228,7 @@ export class Database {
       id: row.id,
       filePath: row.file_path,
       fileName: row.file_name,
+      displayTitle: row.display_title,
       fileSize: row.file_size,
       createdAt: row.created_at,
       modifiedAt: row.modified_at,
@@ -244,6 +248,7 @@ export class Database {
       id: number;
       file_path: string;
       file_name: string;
+      display_title: string | null;
       file_size: number;
       created_at: number;
       modified_at: number;
@@ -260,6 +265,7 @@ export class Database {
       id: result.id,
       filePath: result.file_path,
       fileName: result.file_name,
+      displayTitle: result.display_title,
       fileSize: result.file_size,
       createdAt: result.created_at,
       modifiedAt: result.modified_at,
@@ -331,6 +337,10 @@ export class Database {
 
   saveReview(vodId: number, reviewText: string): void {
     this.db.prepare('UPDATE vods SET review_text = ? WHERE id = ?').run(reviewText, vodId);
+  }
+
+  setVODTitle(vodId: number, title: string | null): void {
+    this.db.prepare('UPDATE vods SET display_title = ? WHERE id = ?').run(title, vodId);
   }
 
   linkMatch(vodId: number, matchId: string): void {

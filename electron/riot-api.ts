@@ -49,20 +49,32 @@ export function toRegionalRouting(region: string): RegionalRouting {
   throw new Error(`Unsupported region: ${region}`);
 }
 
+function normalizeApiKey(raw: string): string {
+  const s = String(raw ?? '').trim().replace(/^["']|["']$/g, '');
+  if (!s) return '';
+  const rgapiMatch = s.match(/RGAPI-[0-9a-fA-F-]{16,}/);
+  if (rgapiMatch?.[0]) return rgapiMatch[0].trim();
+  const lower = s.toLowerCase();
+  if (lower.startsWith('bearer ')) return s.slice('bearer '.length).trim();
+  if (s.includes(':')) return s.split(':').slice(1).join(':').trim();
+  return s;
+}
+
 async function riotFetchJson(url: string, apiKey: string): Promise<any> {
+  const token = normalizeApiKey(apiKey);
   const response = await fetch(url, {
     headers: {
-      'X-Riot-Token': apiKey,
+      'X-Riot-Token': token,
     },
   });
 
   if (!response.ok) {
     if (response.status === 404) throw new Error('Not found');
     if (response.status === 401) {
-      throw new Error('Unauthorized (401). Check your Riot API key (it may be expired).');
+      throw new Error('Unauthorized (401). This usually means the API key was not sent/recognized. Make sure it is exactly `RGAPI-...`.');
     }
     if (response.status === 403) {
-      throw new Error('Forbidden (403). Check your Riot API key and permissions.');
+      throw new Error('Forbidden (403). Check your Riot API key (it may be expired) and permissions.');
     }
     if (response.status === 429) throw new Error('Rate limit exceeded. Please try again later.');
     throw new Error(`API error: ${response.status} ${response.statusText}`);

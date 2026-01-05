@@ -49,6 +49,9 @@ export function createAutoLinker(params: {
   let autoLinkTimer: NodeJS.Timeout | null = null;
   let autoLinkInFlight = false;
   let autoLinkQueued = false;
+  // In-memory caches to reduce Riot calls (best-effort; cleared between runs)
+  let matchIdsCache = new Map<string, string[]>(); // key: `${region}|${puuid}|${startSec}|${endSec}|${count}`
+  let matchTimeCache = new Map<string, Candidate>(); // matchId -> {matchId, matchStartMs, matchEndMs}
 
   function scheduleAutoLink(delayMs: number = 1000) {
     if (autoLinkTimer) clearTimeout(autoLinkTimer);
@@ -58,9 +61,21 @@ export function createAutoLinker(params: {
     }, delayMs);
   }
 
+  function getCachedCandidateFromMetadata(matchId: string): Candidate | null {
+    const cached = params.db.getMatchMetadata(matchId);
+    if (!cached?.stats) return null;
+    const matchEndMs = cached.stats.gameDatetimeMs;
+    const gameLengthSec = cached.stats.gameLengthSec;
+    if (typeof matchEndMs !== 'number' || typeof gameLengthSec !== 'number') return null;
+    const matchStartMs = matchEndMs - gameLengthSec * 1000;
+    return { matchId, matchStartMs, matchEndMs };
+  }
+
   async function autoLinkVod(vodId: number, opts?: { force?: boolean }): Promise<void> {
     const vod = params.db.getVOD(vodId);
     if (!vod) return;
+    // De-dupe repeated "retry" clicks while a VOD is already being linked.
+    if (vod.matchLinkStatus === 'linking' && !opts?.force) return;
     if (vod.matchId && !opts?.force) return;
     if (vod.matchId && opts?.force) {
       params.db.unlinkMatch(vodId);
@@ -74,50 +89,70 @@ export function createAutoLinker(params: {
     if (!apiKey || !puuid) {
       // Not configured; don't mark as error
       params.db.setVodLinkStatus({ vodId, status: 'not_found', error: 'Riot account not configured' });
+      params.notifyVodsUpdated();
       return;
     }
 
     params.db.setVodLinkStatus({ vodId, status: 'linking' });
+    // Push UI update immediately (so the user sees "Auto-linking…" right away)
+    params.notifyVodsUpdated();
 
     try {
       const { listTftMatchIdsByPuuid, fetchTftMatch } = await import('../riot-api.js');
 
-      // Assumption: VOD timestamp represents game start, so only use createdAt.
+      // OBS file timestamps can be tricky (createdAt vs modifiedAt); try both to avoid huge windows.
       const vodTimesToTry: number[] = [];
       if (typeof vod.createdAt === 'number') vodTimesToTry.push(vod.createdAt);
+      if (typeof vod.modifiedAt === 'number' && vod.modifiedAt !== vod.createdAt) vodTimesToTry.push(vod.modifiedAt);
 
       for (const vodTimeMs of vodTimesToTry) {
-        // Pass 1: shortly before (clock skew) through after VOD start.
-        const windows: Array<{ startMs: number; endMs: number }> = [
-          { startMs: vodTimeMs - 2 * 60_000, endMs: vodTimeMs + 45 * 60_000 },
-          { startMs: vodTimeMs - 2 * 60_000, endMs: vodTimeMs + 3 * 60 * 60_000 },
-        ];
+        // Single reasonably-sized window. TFT games are <~45min; add buffer for clock skew and OBS timing.
+        const w = { startMs: vodTimeMs - 2 * 60_000, endMs: vodTimeMs + 90 * 60_000 };
+        const startTimeSec = Math.floor(w.startMs / 1000);
+        const endTimeSec = Math.floor(w.endMs / 1000);
+        const count = 20;
+        const cacheKey = `${region}|${puuid}|${startTimeSec}|${endTimeSec}|${count}`;
 
-        for (const w of windows) {
-          const matchIds = await params.withRiotRateLimit(() =>
+        const matchIds =
+          matchIdsCache.get(cacheKey) ??
+          (await params.withRiotRateLimit(() =>
             listTftMatchIdsByPuuid({
               puuid,
               region,
               apiKey,
-              startTimeSec: Math.floor(w.startMs / 1000),
-              endTimeSec: Math.floor(w.endMs / 1000),
-              count: 20,
+              startTimeSec,
+              endTimeSec,
+              count,
             }),
-          );
+          ));
+        matchIdsCache.set(cacheKey, matchIds);
 
-          if (!matchIds.length) continue;
+        if (!matchIds.length) continue;
 
-          const candidates: Candidate[] = [];
+        const candidates: Candidate[] = [];
 
-          // Fetch details for up to N matches to score them
-          for (const matchId of matchIds.slice(0, 10)) {
-            const match = await params.withRiotRateLimit(() => fetchTftMatch({ matchId, region, apiKey }));
-            // Treat Riot's game_datetime as game END time; derive START using game_length.
-            const matchEndMs = match?.info?.game_datetime;
-            const gameLengthSec = match?.info?.game_length;
-            if (typeof matchEndMs !== 'number' || typeof gameLengthSec !== 'number') continue;
-            const matchStartMs = matchEndMs - gameLengthSec * 1000;
-            candidates.push({ matchId, matchStartMs, matchEndMs });
+        // Fetch details for up to N matches to score them.
+        // Note: we try cache first (DB + in-memory) to avoid re-fetching across VODs.
+        const MAX_MATCH_DETAILS = 6;
+        for (const matchId of matchIds.slice(0, MAX_MATCH_DETAILS)) {
+          const fromMem = matchTimeCache.get(matchId);
+          const fromDb = fromMem ? null : getCachedCandidateFromMetadata(matchId);
+          const cached = fromMem ?? fromDb;
+          if (cached) {
+            matchTimeCache.set(matchId, cached);
+            candidates.push(cached);
+            continue;
+          }
+
+          const match = await params.withRiotRateLimit(() => fetchTftMatch({ matchId, region, apiKey }));
+          // Treat Riot's game_datetime as game END time; derive START using game_length.
+          const matchEndMs = match?.info?.game_datetime;
+          const gameLengthSec = match?.info?.game_length;
+          if (typeof matchEndMs !== 'number' || typeof gameLengthSec !== 'number') continue;
+          const matchStartMs = matchEndMs - gameLengthSec * 1000;
+          const candidate = { matchId, matchStartMs, matchEndMs };
+          matchTimeCache.set(matchId, candidate);
+          candidates.push(candidate);
 
             // Opportunistically cache metadata for later UI rendering
             try {
@@ -192,7 +227,7 @@ export function createAutoLinker(params: {
               });
               return;
             }
-            // No candidates in this window; try next window
+            // No candidates for this vodTime; try next vodTime candidate
             continue;
           }
 
@@ -225,8 +260,7 @@ export function createAutoLinker(params: {
             });
             return;
           }
-          // else not found in this window; try next
-        }
+          // else not found for this vodTime; try next vodTime candidate
       }
 
       params.db.setVodLinkStatus({ vodId, status: 'not_found', error: null, candidates: null, confidenceMs: null });
@@ -249,6 +283,9 @@ export function createAutoLinker(params: {
       return;
     }
     autoLinkInFlight = true;
+    // Clear caches for each run (keeps memory bounded; still reduces duplicates within run)
+    matchIdsCache = new Map();
+    matchTimeCache = new Map();
     try {
       const vods = params.db.listUnlinkedVods();
       for (const vod of vods) {
