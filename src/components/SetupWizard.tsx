@@ -1,19 +1,19 @@
 import { useState } from 'react';
+import { REGIONS, type RiotRegion, canTestRiot, normalizeElectronInvokeError, persistRiotSettings, testAndPersistPuuid } from '../lib/riot';
 
 interface SetupWizardProps {
   onComplete: () => void;
 }
 
-const REGIONS = ['NA', 'EUW', 'EUNE', 'KR', 'OCE', 'JP', 'BR', 'LAN', 'LAS', 'TR', 'RU'] as const;
-
 export default function SetupWizard({ onComplete }: SetupWizardProps) {
   const [folderPath, setFolderPath] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [riotRegion, setRiotRegion] = useState<(typeof REGIONS)[number]>('NA');
+  const [riotRegion, setRiotRegion] = useState<RiotRegion>('NA');
   const [gameName, setGameName] = useState('');
   const [tagLine, setTagLine] = useState('');
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [step, setStep] = useState(1);
 
   const handleSelectFolder = async () => {
@@ -23,32 +23,20 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     }
   };
 
-  const canTest = !!apiKey.trim() && !!gameName.trim() && !!tagLine.trim();
+  const canTest = canTestRiot({ region: riotRegion, apiKey, gameName, tagLine });
 
   const handleTestConnection = async () => {
     if (!canTest) return;
     setTesting(true);
     setTestError(null);
+    setSuccessMessage(null);
     try {
-      const res = await window.electronAPI.testRiotConnection({
-        region: riotRegion,
-        gameName: gameName.trim(),
-        tagLine: tagLine.trim(),
-        apiKey: apiKey.trim(),
-      });
-      await window.electronAPI.setSetting('riot_api_key', apiKey.trim());
-      await window.electronAPI.setSetting('riot_region', riotRegion);
-      await window.electronAPI.setSetting('riot_game_name', gameName.trim());
-      await window.electronAPI.setSetting('riot_tag_line', tagLine.trim());
-      await window.electronAPI.setSetting('riot_puuid', res.puuid);
+      await persistRiotSettings({ region: riotRegion, apiKey, gameName, tagLine });
+      await testAndPersistPuuid({ region: riotRegion, apiKey, gameName, tagLine });
       await window.electronAPI.autoLinkAll();
-      alert('Riot account connected!');
-    } catch (e: any) {
-      const msg = (e?.message || 'Failed to connect to Riot').replace(
-        /^Error invoking remote method '.*?': Error: /,
-        ''
-      );
-      setTestError(msg);
+      setSuccessMessage('Riot account connected!');
+    } catch (e: unknown) {
+      setTestError(normalizeElectronInvokeError(e) || 'Failed to connect to Riot');
     } finally {
       setTesting(false);
     }
@@ -60,22 +48,11 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
       await window.electronAPI.scanVODs(folderPath);
       setStep(2);
     } else if (step === 2) {
-      if (apiKey.trim()) {
-        await window.electronAPI.setSetting('riot_api_key', apiKey.trim());
-      }
+      await persistRiotSettings({ region: riotRegion, apiKey, gameName, tagLine });
       // If user filled Riot ID info, attempt to connect (best-effort)
       if (canTest) {
         try {
-          const res = await window.electronAPI.testRiotConnection({
-            region: riotRegion,
-            gameName: gameName.trim(),
-            tagLine: tagLine.trim(),
-            apiKey: apiKey.trim(),
-          });
-          await window.electronAPI.setSetting('riot_region', riotRegion);
-          await window.electronAPI.setSetting('riot_game_name', gameName.trim());
-          await window.electronAPI.setSetting('riot_tag_line', tagLine.trim());
-          await window.electronAPI.setSetting('riot_puuid', res.puuid);
+          await testAndPersistPuuid({ region: riotRegion, apiKey, gameName, tagLine });
           await window.electronAPI.autoLinkAll();
         } catch {
           // Don't block setup completion
@@ -224,11 +201,11 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                   fontSize: '14px'
                 }}
               />
-              {testError && (
-                <p style={{ marginTop: '8px', color: '#ff6b6b', fontSize: '12px' }}>
-                  {testError}
-                </p>
-              )}
+              {testError ? (
+                <p style={{ marginTop: '8px', color: '#ff6b6b', fontSize: '12px' }}>{testError}</p>
+              ) : successMessage ? (
+                <p style={{ marginTop: '8px', color: '#7bd88f', fontSize: '12px' }}>{successMessage}</p>
+              ) : null}
             </div>
             <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
               <button

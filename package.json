@@ -2,14 +2,19 @@
   "name": "tft-vod-review",
   "version": "0.1.0",
   "description": "Local-first VOD review tool for TFT players",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "build:electron": "npx tsc -p tsconfig.preload.json && mv dist-electron/preload.js dist-electron/preload.cjs && npx tsc -p tsconfig.node.json || true",
+    "build:electron": "npx tsc -p tsconfig.preload.json && mv dist-electron/electron/preload.js dist-electron/electron/preload.cjs && npx tsc -p tsconfig.node.json",
     "build:all": "npm run build:electron && npm run build",
     "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json && tsc -p tsconfig.preload.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run --passWithNoTests",
     "postinstall": "npx @electron/rebuild -f -w better-sqlite3",
     "electron:dev": "npm run build:electron && concurrently \"npm run dev\" \"wait-on http://localhost:5173 && NODE_ENV=development electron .\"",
     "electron:build": "npm run build:all && electron-builder"
@@ -24,6 +29,7 @@
   "license": "MIT",
   "devDependencies": {
     "@electron/rebuild": "^4.0.2",
+    "@eslint/js": "^9.17.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.10.0",
     "@types/react": "^18.2.43",
@@ -33,15 +39,23 @@
     "electron": "^28.3.3",
     "electron-builder": "^24.9.1",
     "electron-rebuild": "^3.2.9",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
     "rxjs": "^7.8.1",
+    "typescript-eslint": "^8.19.1",
     "typescript": "^5.9.3",
     "vite": "^5.0.8",
+    "vitest": "^2.1.8",
     "wait-on": "^7.2.0"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "zod": "^3.24.1"
   },
   "build": {
     "appId": "com.tftvod.review",

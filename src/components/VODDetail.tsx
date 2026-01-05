@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { VOD, MatchMetadata } from '../types/electron';
 import MatchRow from './MatchRow';
 
@@ -16,6 +16,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
   const [dirty, setDirty] = useState(false);
   const [lastAutosavedAt, setLastAutosavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const [linkCandidates, setLinkCandidates] = useState<Array<{
     matchId: string;
     matchStartMs: number;
@@ -40,11 +41,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     vodIdRef.current = vodId;
   }, [vodId]);
 
-  useEffect(() => {
-    loadVOD();
-  }, [vodId]);
-
-  const loadVOD = async () => {
+  const loadVOD = useCallback(async () => {
     setLoading(true);
     try {
       const s = await window.electronAPI.getSettings();
@@ -56,6 +53,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
         setReviewText(initialReview);
         setDirty(false);
         setSaveError(null);
+        setLinkError(null);
         setLastAutosavedAt(null);
         setLinkCandidates([]);
 
@@ -83,7 +81,11 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [vodId]);
+
+  useEffect(() => {
+    void loadVOD();
+  }, [loadVOD]);
 
   const tacticsRegionSegment = useMemo(() => {
     const r = (settings.riot_region || 'NA').toLowerCase();
@@ -104,7 +106,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     return `${tacticsPlayerUrl}/${encodeURIComponent(vod.matchId)}`;
   }, [tacticsPlayerUrl, vod?.matchId]);
 
-  const handleSaveReview = async (textToSave: string) => {
+  const handleSaveReview = useCallback(async (textToSave: string) => {
     if (!vod) return false;
     setSaving(true);
     setSaveError(null);
@@ -121,17 +123,18 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
     } finally {
       setSaving(false);
     }
-  };
+  }, [vod]);
 
   const handleRetryAutoLink = async (opts?: { force?: boolean }) => {
     if (!vod) return;
     setLinkingAction(true);
+    setLinkError(null);
     try {
       await window.electronAPI.autoLinkVOD(vod.id, opts);
       await loadVOD();
     } catch (error) {
       console.error('Error retrying auto-link:', error);
-      alert('Error retrying auto-link. Please try again.');
+      setLinkError('Error retrying auto-link. Please try again.');
     } finally {
       setLinkingAction(false);
     }
@@ -140,6 +143,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
   const handleSelectCandidate = async (matchId: string) => {
     if (!vod) return;
     setLinkingAction(true);
+    setLinkError(null);
     try {
       await window.electronAPI.linkMatch(vod.id, matchId);
       setVOD({ ...vod, matchId });
@@ -148,7 +152,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
       setLinkCandidates([]);
     } catch (error: any) {
       console.error('Error linking candidate match:', error);
-      alert(`Error linking match: ${error?.message || 'Unknown error'}`);
+      setLinkError(`Error linking match: ${error?.message || 'Unknown error'}`);
     } finally {
       setLinkingAction(false);
     }
@@ -161,7 +165,7 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
       void handleSaveReview(reviewText);
     }, 2000);
     return () => clearTimeout(timer);
-  }, [reviewText, dirty, saving, vod]);
+  }, [reviewText, dirty, saving, vod, handleSaveReview]);
 
   // Best-effort flush if the component unmounts while still dirty (e.g. fast navigation)
   useEffect(() => {
@@ -300,6 +304,12 @@ export default function VODDetail({ vodId, onBack }: VODDetailProps) {
                 )}
               </div>
             </div>
+
+            {linkError ? (
+              <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 6, backgroundColor: 'rgba(255,107,107,0.1)', border: '1px solid rgba(255,107,107,0.35)', color: '#ff6b6b', fontSize: 12 }}>
+                {linkError}
+              </div>
+            ) : null}
             
             {!vod.matchId ? (
               <div>

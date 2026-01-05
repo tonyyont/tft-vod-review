@@ -106,13 +106,7 @@ function ItemIcon({ itemKey }: { itemKey: string | number }) {
     <img
       src={src}
       title={`Item ${String(itemKey)}`}
-      style={{
-        width: 14,
-        height: 14,
-        borderRadius: 3,
-        border: '1px solid rgba(0,0,0,0.35)',
-        backgroundColor: '#111',
-      }}
+      className="unitItemIcon"
     />
   );
 }
@@ -126,46 +120,28 @@ function UnitTile({ unit, size }: { unit: Champion; size: number }) {
   const itemsToShow: Array<string | number> = numericItems.length ? numericItems : namedItems;
 
   return (
-    <div style={{ width: size, height: size + 16, position: 'relative', flex: '0 0 auto' }}>
-      <div style={{
-        width: size,
-        height: size,
-        borderRadius: 8,
-        overflow: 'hidden',
-        border: '1px solid #333',
-        backgroundColor: '#111',
-        position: 'relative',
-      }}>
-        {src ? (
-          <img
-            src={src}
-            title={champId || 'Unknown unit'}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-          />
-        ) : null}
-        <div style={{
-          position: 'absolute',
-          top: 6,
-          left: 6,
-          padding: '2px 6px',
-          borderRadius: 999,
-          backgroundColor: 'rgba(0,0,0,0.65)',
-          color: '#fff',
-          fontSize: 11,
-          fontWeight: 800,
-          letterSpacing: 0.2,
-        }}>
-          {'★'.repeat(stars)}
+    <div style={{ width: size, height: size, position: 'relative', flex: '0 0 auto' }} className="unitTile">
+      {src ? (
+        <img
+          src={src}
+          title={champId || 'Unknown unit'}
+          className="unitTile__img"
+        />
+      ) : null}
+
+      <div className="unitTile__stars">
+        <div className="unitTile__starsInner">{'★'.repeat(stars)}</div>
+      </div>
+
+      {itemsToShow.length ? (
+        <div className="unitTile__items">
+          <div className="unitTile__itemsInner">
+            {itemsToShow.map((it, idx) => (
+              <ItemIcon key={`${String(it)}-${idx}`} itemKey={it} />
+            ))}
+          </div>
         </div>
-      </div>
-      <div style={{
-        marginTop: 4,
-        display: 'flex',
-        gap: 3,
-        justifyContent: 'center',
-      }}>
-        {itemsToShow.map((it) => <ItemIcon key={String(it)} itemKey={it} />)}
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -228,7 +204,7 @@ function TraitChip({ trait }: { trait: Trait }) {
 function AugmentsRow({ augments }: { augments: string[] }) {
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-      {augments.map((a) => <AugmentChip key={a} augment={a} />)}
+      {augments.map((a, idx) => <AugmentChip key={`${a}-${idx}`} augment={a} />)}
     </div>
   );
 }

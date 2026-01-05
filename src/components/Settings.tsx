@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { REGIONS, type RiotRegion, canTestRiot, normalizeElectronInvokeError, persistRiotSettings, testAndPersistPuuid } from '../lib/riot';
 
 interface SettingsProps {
   settings: Record<string, string>;
@@ -6,22 +7,21 @@ interface SettingsProps {
   onSettingsChange: () => void;
 }
 
-const REGIONS = ['NA', 'EUW', 'EUNE', 'KR', 'OCE', 'JP', 'BR', 'LAN', 'LAS', 'TR', 'RU'] as const;
-
 export default function Settings({ settings, onBack, onSettingsChange }: SettingsProps) {
   const [folderPath, setFolderPath] = useState(settings.obs_folder_path || '');
   const [apiKey, setApiKey] = useState(settings.riot_api_key || '');
-  const [riotRegion, setRiotRegion] = useState<(typeof REGIONS)[number]>((settings.riot_region as any) || 'NA');
+  const [riotRegion, setRiotRegion] = useState<RiotRegion>((settings.riot_region as RiotRegion) || 'NA');
   const [gameName, setGameName] = useState(settings.riot_game_name || '');
   const [tagLine, setTagLine] = useState(settings.riot_tag_line || '');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setFolderPath(settings.obs_folder_path || '');
     setApiKey(settings.riot_api_key || '');
-    setRiotRegion((settings.riot_region as any) || 'NA');
+    setRiotRegion((settings.riot_region as RiotRegion) || 'NA');
     setGameName(settings.riot_game_name || '');
     setTagLine(settings.riot_tag_line || '');
   }, [settings]);
@@ -36,24 +36,16 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
   const handleSave = async () => {
     setSaving(true);
     setTestError(null);
+    setInfoMessage(null);
     try {
       await window.electronAPI.setSetting('obs_folder_path', folderPath);
-      if (apiKey.trim()) await window.electronAPI.setSetting('riot_api_key', apiKey.trim());
-      if (riotRegion) await window.electronAPI.setSetting('riot_region', riotRegion);
-      if (gameName.trim()) await window.electronAPI.setSetting('riot_game_name', gameName.trim());
-      if (tagLine.trim()) await window.electronAPI.setSetting('riot_tag_line', tagLine.trim());
+      await persistRiotSettings({ region: riotRegion, apiKey, gameName, tagLine });
 
       // If Riot fields are present, validate and save puuid
-      const canTest = !!apiKey.trim() && !!gameName.trim() && !!tagLine.trim();
+      const canTest = canTestRiot({ region: riotRegion, apiKey, gameName, tagLine });
       if (canTest) {
         setTesting(true);
-        const res = await window.electronAPI.testRiotConnection({
-          region: riotRegion,
-          gameName: gameName.trim(),
-          tagLine: tagLine.trim(),
-          apiKey: apiKey.trim(),
-        });
-        await window.electronAPI.setSetting('riot_puuid', res.puuid);
+        await testAndPersistPuuid({ region: riotRegion, apiKey, gameName, tagLine });
       }
       
       // Rescan VODs if folder changed
@@ -64,10 +56,8 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
       onSettingsChange();
     } catch (error) {
       console.error('Error saving settings:', error);
-      let msg = (error as any)?.message || 'Error saving settings. Please try again.';
-      msg = msg.replace(/^Error invoking remote method '.*?': Error: /, '');
+      const msg = normalizeElectronInvokeError(error) || 'Error saving settings. Please try again.';
       setTestError(msg);
-      alert(msg);
     } finally {
       setSaving(false);
       setTesting(false);
@@ -75,12 +65,14 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
   };
 
   const handleRelinkAll = async () => {
+    setTestError(null);
+    setInfoMessage(null);
     try {
       await window.electronAPI.autoLinkAll();
-      alert('Started auto-linking matches in the background.');
+      setInfoMessage('Started auto-linking matches in the background.');
     } catch (e) {
       console.error('Error starting auto-link:', e);
-      alert('Error starting auto-link. Please try again.');
+      setTestError(normalizeElectronInvokeError(e) || 'Error starting auto-link. Please try again.');
     }
   };
 
@@ -234,11 +226,11 @@ export default function Settings({ settings, onBack, onSettingsChange }: Setting
               fontSize: '14px'
             }}
           />
-          {testError && (
-            <p style={{ marginTop: '8px', color: '#ff6b6b', fontSize: '12px' }}>
-              {testError}
-            </p>
-          )}
+          {testError ? (
+            <p style={{ marginTop: '8px', color: '#ff6b6b', fontSize: '12px' }}>{testError}</p>
+          ) : infoMessage ? (
+            <p style={{ marginTop: '8px', color: '#7bd88f', fontSize: '12px' }}>{infoMessage}</p>
+          ) : null}
         </div>
 
         <div style={{ marginBottom: '24px', display: 'flex', gap: '10px' }}>

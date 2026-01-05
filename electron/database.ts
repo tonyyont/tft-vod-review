@@ -2,6 +2,7 @@ import BetterSQLite3 from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import type { Champion, MatchMetadata, Trait, VOD, VodLinkStatus } from '../common/types.js';
 
 export class Database {
   private db: BetterSQLite3.Database;
@@ -19,6 +20,7 @@ export class Database {
   }
 
   initialize() {
+    this.applyMigrations();
     // VODs table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS vods (
@@ -70,6 +72,87 @@ export class Database {
     // Best-effort migration for existing user DBs (SQLite doesn't support IF NOT EXISTS for ADD COLUMN)
     this.migrateVodsTable();
     this.migrateMatchMetadataTable();
+
+    // Bump schema version after best-effort migrations.
+    try {
+      this.db.pragma('user_version = 1');
+    } catch {
+      // ignore
+    }
+  }
+
+  private applyMigrations(): void {
+    // Lightweight schema versioning; we keep it simple and idempotent.
+    // If we ever add breaking schema changes, migrate based on PRAGMA user_version here.
+    try {
+      const version = this.db.pragma('user_version', { simple: true }) as number;
+      if (typeof version === 'number' && version >= 1) return;
+    } catch {
+      // ignore (older sqlite builds / pragma issues)
+    }
+  }
+
+  private safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
+    if (typeof value !== 'string' || !value) return fallback;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private safeJsonParseArray<T>(value: string | null | undefined): T[] {
+    const parsed = this.safeJsonParse<unknown>(value, []);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  }
+
+  private normalizeTraits(rawTraits: unknown): Trait[] {
+    const traits = Array.isArray(rawTraits) ? rawTraits : [];
+    return traits
+      .map((t: any) => ({
+        name: t?.name ?? t?.trait_name ?? t?.traitName ?? '',
+        numUnits: Number(t?.num_units ?? t?.numUnits ?? 0),
+        style: Number(t?.style ?? t?.styleCurrent ?? 0),
+        tierCurrent: Number(t?.tier_current ?? t?.tierCurrent ?? 0),
+        tierTotal: Number(t?.tier_total ?? t?.tierTotal ?? 0),
+      }))
+      .filter((t) => !!t.name && (t.tierCurrent > 0 || t.style > 0));
+  }
+
+  private normalizeUnits(rawUnits: unknown): Champion[] {
+    const units = Array.isArray(rawUnits) ? rawUnits : [];
+    return units.map((u: any) => ({
+      ...u,
+      tier: Number(u?.tier ?? 1),
+      characterId: u?.characterId ?? u?.character_id ?? u?.character ?? u?.name ?? '',
+      items: Array.isArray(u?.items) ? u.items : u?.items,
+      itemNames: Array.isArray(u?.itemNames) ? u.itemNames : u?.itemNames,
+    }));
+  }
+
+  private emptyStats(): MatchMetadata['stats'] {
+    return {
+      goldLeft: null,
+      lastRound: null,
+      totalDamageToPlayers: null,
+      gameLengthSec: null,
+      gameDatetimeMs: null,
+      queueId: null,
+      tftSetNumber: null,
+    };
+  }
+
+  private normalizeStats(raw: unknown): MatchMetadata['stats'] {
+    const obj = (raw && typeof raw === 'object') ? (raw as any) : {};
+    return {
+      goldLeft: typeof obj.goldLeft === 'number' ? obj.goldLeft : null,
+      lastRound: typeof obj.lastRound === 'number' ? obj.lastRound : null,
+      totalDamageToPlayers: typeof obj.totalDamageToPlayers === 'number' ? obj.totalDamageToPlayers : null,
+      gameLengthSec: typeof obj.gameLengthSec === 'number' ? obj.gameLengthSec : null,
+      gameDatetimeMs: typeof obj.gameDatetimeMs === 'number' ? obj.gameDatetimeMs : null,
+      queueId: typeof obj.queueId === 'number' ? obj.queueId : null,
+      tftSetNumber: typeof obj.tftSetNumber === 'number' ? obj.tftSetNumber : null,
+    };
   }
 
   private migrateVodsTable(): void {
@@ -122,22 +205,7 @@ export class Database {
   }
 
   // VODs
-  getVODs(): Array<{
-    id: number;
-    filePath: string;
-    fileName: string;
-    fileSize: number;
-    createdAt: number;
-    modifiedAt: number;
-    matchId: string | null;
-    matchLinkStatus: string | null;
-    matchLinkConfidenceMs: number | null;
-    matchLinkUpdatedAt: number | null;
-    matchLinkCandidates: string[] | null;
-    matchLinkError: string | null;
-    reviewText: string | null;
-    matchMetadata: any | null;
-  }> {
+  getVODs(): VOD[] {
     const rows = this.db.prepare('SELECT * FROM vods ORDER BY created_at DESC').all() as Array<{
       id: number;
       file_path: string;
@@ -161,31 +229,17 @@ export class Database {
       createdAt: row.created_at,
       modifiedAt: row.modified_at,
       matchId: row.match_id,
-      matchLinkStatus: row.match_link_status,
+      matchLinkStatus: row.match_link_status as VodLinkStatus | null,
       matchLinkConfidenceMs: row.match_link_confidence_ms,
       matchLinkUpdatedAt: row.match_link_updated_at,
-      matchLinkCandidates: row.match_link_candidates ? JSON.parse(row.match_link_candidates) : null,
+      matchLinkCandidates: row.match_link_candidates ? this.safeJsonParseArray<string>(row.match_link_candidates) : null,
       matchLinkError: row.match_link_error,
       reviewText: row.review_text,
       matchMetadata: row.match_id ? this.getMatchMetadata(row.match_id) : null,
     }));
   }
 
-  getVOD(vodId: number): {
-    id: number;
-    filePath: string;
-    fileName: string;
-    fileSize: number;
-    createdAt: number;
-    modifiedAt: number;
-    matchId: string | null;
-    matchLinkStatus: string | null;
-    matchLinkConfidenceMs: number | null;
-    matchLinkUpdatedAt: number | null;
-    matchLinkCandidates: string[] | null;
-    matchLinkError: string | null;
-    reviewText: string | null;
-  } | null {
+  getVOD(vodId: number): Omit<VOD, 'matchMetadata'> | null {
     const result = this.db.prepare('SELECT * FROM vods WHERE id = ?').get(vodId) as {
       id: number;
       file_path: string;
@@ -210,10 +264,12 @@ export class Database {
       createdAt: result.created_at,
       modifiedAt: result.modified_at,
       matchId: result.match_id,
-      matchLinkStatus: result.match_link_status,
+      matchLinkStatus: result.match_link_status as VodLinkStatus | null,
       matchLinkConfidenceMs: result.match_link_confidence_ms,
       matchLinkUpdatedAt: result.match_link_updated_at,
-      matchLinkCandidates: result.match_link_candidates ? JSON.parse(result.match_link_candidates) : null,
+      matchLinkCandidates: result.match_link_candidates
+        ? this.safeJsonParseArray<string>(result.match_link_candidates)
+        : null,
       matchLinkError: result.match_link_error,
       reviewText: result.review_text,
     };
@@ -236,6 +292,25 @@ export class Database {
     return existing?.id || 0;
   }
 
+  upsertVODBatch(
+    items: Array<{ filePath: string; fileName: string; fileSize: number; createdAt: number; modifiedAt: number }>
+  ): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO vods (file_path, file_name, file_size, created_at, modified_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(file_path) DO UPDATE SET
+        file_name = excluded.file_name,
+        file_size = excluded.file_size,
+        modified_at = excluded.modified_at
+    `);
+    const tx = this.db.transaction((rows: typeof items) => {
+      for (const r of rows) {
+        stmt.run(r.filePath, r.fileName, r.fileSize, r.createdAt, r.modifiedAt);
+      }
+    });
+    tx(items);
+  }
+
   listVODFilePaths(): string[] {
     const rows = this.db.prepare('SELECT file_path FROM vods').all() as Array<{ file_path: string }>;
     return rows.map(r => r.file_path);
@@ -243,6 +318,15 @@ export class Database {
 
   deleteVODByPath(filePath: string): void {
     this.db.prepare('DELETE FROM vods WHERE file_path = ?').run(filePath);
+  }
+
+  deleteVODsByPath(filePaths: string[]): void {
+    if (!filePaths.length) return;
+    const stmt = this.db.prepare('DELETE FROM vods WHERE file_path = ?');
+    const tx = this.db.transaction((paths: string[]) => {
+      for (const p of paths) stmt.run(p);
+    });
+    tx(filePaths);
   }
 
   saveReview(vodId: number, reviewText: string): void {
@@ -331,31 +415,9 @@ export class Database {
   }
 
   // Match metadata
-  getMatchMetadata(matchId: string): {
-    matchId: string;
-    placement: number;
-    level: number;
-    augments: string[];
-    traits: any[];
-    finalBoard: any[];
-    stats: any;
-    fetchedAt: number;
-  } | null {
+  getMatchMetadata(matchId: string): MatchMetadata | null {
     const result = this.db.prepare('SELECT * FROM match_metadata WHERE match_id = ?').get(matchId) as any;
     if (!result) return null;
-
-    const normalizeTraits = (rawTraits: any[]) => {
-      const traits = Array.isArray(rawTraits) ? rawTraits : [];
-      return traits
-        .map((t) => ({
-          name: t?.name ?? t?.trait_name ?? t?.traitName ?? '',
-          numUnits: Number(t?.num_units ?? t?.numUnits ?? 0),
-          style: Number(t?.style ?? t?.styleCurrent ?? 0),
-          tierCurrent: Number(t?.tier_current ?? t?.tierCurrent ?? 0),
-          tierTotal: Number(t?.tier_total ?? t?.tierTotal ?? 0),
-        }))
-        .filter((t) => !!t.name && (t.tierCurrent > 0 || t.style > 0));
-    };
 
     const deriveFromRaw = (raw: any) => {
       const participants = raw?.info?.participants || [];
@@ -378,28 +440,17 @@ export class Database {
       };
     };
 
-    const rawData = result.raw_data ? JSON.parse(result.raw_data) : null;
-    const derived = rawData ? deriveFromRaw(rawData) : { level: 0, stats: {} };
-    const normalizeUnits = (rawUnits: any[]) => {
-      const units = Array.isArray(rawUnits) ? rawUnits : [];
-      return units.map((u) => ({
-        ...u,
-        characterId: u?.characterId ?? u?.character_id ?? u?.character ?? u?.name ?? '',
-        tier: Number(u?.tier ?? 1),
-        // Preserve both forms; UI prefers numeric items then itemNames
-        items: Array.isArray(u?.items) ? u.items : u?.items,
-        itemNames: Array.isArray(u?.itemNames) ? u.itemNames : u?.itemNames,
-      }));
-    };
+    const rawData = result.raw_data ? this.safeJsonParse<any>(result.raw_data, null) : null;
+    const derived = rawData ? deriveFromRaw(rawData) : { level: 0, stats: this.emptyStats() };
 
     return {
       matchId: result.match_id,
       placement: result.placement,
       level: typeof result.level === 'number' ? result.level : derived.level,
-      augments: JSON.parse(result.augments || '[]'),
-      traits: normalizeTraits(JSON.parse(result.traits || '[]')),
-      finalBoard: normalizeUnits(JSON.parse(result.final_board || '[]')),
-      stats: result.stats ? JSON.parse(result.stats || '{}') : derived.stats,
+      augments: this.safeJsonParseArray<string>(result.augments),
+      traits: this.normalizeTraits(this.safeJsonParse<unknown>(result.traits, [])),
+      finalBoard: this.normalizeUnits(this.safeJsonParse<unknown>(result.final_board, [])),
+      stats: result.stats ? this.normalizeStats(this.safeJsonParse<unknown>(result.stats, derived.stats)) : derived.stats,
       fetchedAt: result.fetched_at,
     };
   }
@@ -409,10 +460,10 @@ export class Database {
     placement: number,
     level: number,
     augments: string[],
-    traits: any[],
-    finalBoard: any[],
-    stats: any,
-    rawData: any
+    traits: Trait[],
+    finalBoard: Champion[],
+    stats: MatchMetadata['stats'],
+    rawData: unknown
   ): void {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO match_metadata 
@@ -426,7 +477,7 @@ export class Database {
       JSON.stringify(augments),
       JSON.stringify(traits),
       JSON.stringify(finalBoard),
-      JSON.stringify(stats ?? {}),
+      JSON.stringify(stats ?? this.emptyStats()),
       Date.now(),
       JSON.stringify(rawData)
     );
