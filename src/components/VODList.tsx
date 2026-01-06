@@ -125,13 +125,6 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
     });
   };
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
-  };
-
   const hasReview = (vod: VOD) => {
     return vod.reviewText && vod.reviewText.trim().length > 0;
   };
@@ -488,13 +481,6 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
                       </div>
                       <div style={{ display: 'flex', gap: '20px', fontSize: '14px', color: '#888', flexWrap: 'wrap' }}>
                         <span>{formatDate(recencyTs(vod))}</span>
-                        <span>{formatFileSize(vod.fileSize)}</span>
-                        {(() => {
-                          const md = effectiveMetadata(vod);
-                          const placement = Number(md?.placement);
-                          if (!Number.isFinite(placement) || placement <= 0) return null;
-                          return <span style={{ color: '#ddd' }}>#{placement}</span>;
-                        })()}
                         {(() => {
                           const badge = linkBadge(vod);
                           if (!badge) return null;
@@ -589,12 +575,6 @@ export default function VODList({ onVODSelect, onSettingsClick }: VODListProps) 
 
                     <div style={{ display: 'flex', gap: 18, fontSize: 13, color: '#888', flexWrap: 'wrap' }}>
                       <span>{formatDate(recencyTs(vod))}</span>
-                      {(() => {
-                        const md = effectiveMetadata(vod);
-                        const placement = Number(md?.placement);
-                        if (!Number.isFinite(placement) || placement <= 0) return null;
-                        return <span style={{ color: '#ddd' }}>#{placement}</span>;
-                      })()}
                       {(() => {
                         const badge = linkBadge(vod);
                         if (!badge) return null;
